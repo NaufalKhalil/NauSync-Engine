@@ -1,4 +1,5 @@
 import { listDir, copyPath, movePath, deletePath, resolveForRclone } from './fsops.js';
+import { listRootNames } from './pathGuard.js';
 import { uploadToDrive } from './rclone.js';
 import { config } from './config.js';
 import fs from 'fs';
@@ -37,19 +38,33 @@ function resolvePathArg(inputPath) {
 
   const normalizedInput = inputPath.replace(/\\/g, '/');
 
+  let combined;
   if (normalizedInput.startsWith('/')) {
     const stripped = normalizedInput.replace(/^\/+/, '');
-    return stripped === '' ? '.' : path.posix.normalize(stripped);
+    combined = stripped === '' ? '.' : path.posix.normalize(stripped);
+  } else {
+    const base = currentDir === '.' ? '' : currentDir;
+    combined = path.posix.normalize(path.posix.join(base, normalizedInput));
   }
 
-  const base = currentDir === '.' ? '' : currentDir;
-  const combined = path.posix.normalize(path.posix.join(base, normalizedInput));
-
   if (combined === '' || combined === '.') return '.';
+
+  // BUG FIX: kalau hasil gabungan path masih diawali "..", artinya user
+  // mencoba naik lebih tinggi dari root sandbox (mis. "cd .." diulang
+  // sampai lebih tinggi dari BASE_DIR, atau path absolut kayak "/../../etc").
+  // Sebelumnya string ".." / "../.." ini lolos dan currentDir jadi rusak,
+  // bikin navigasi berikutnya ("cd Project") ikut nyasar ke luar sandbox
+  // (kadang sampai ke root drive Windows kalau safeResolve kebetulan tidak
+  // menahannya). Clamp ke root ('.') di sini, jangan biarkan lolos sama sekali.
+  if (combined === '..' || combined.startsWith('../')) return '.';
+
   return combined;
 }
 
-const HELP_TEXT = `*Nausync Cloud — command yang tersedia*
+function buildHelpText() {
+  const rootsList = listRootNames().map((name) => `  • ${name}`).join('\n');
+
+  return `*Nausync Cloud — command yang tersedia*
 
 cd <folder>             -> pindah "folder aktif", biar gak perlu ketik path panjang berulang
 cd ..                   -> naik satu folder ke atas
@@ -68,8 +83,12 @@ shutdown                -> matikan laptop rumah dari jarak jauh
 restart                 -> restart laptop rumah dari jarak jauh
 help                    -> tampilkan pesan ini
 
+Folder yang diizinkan (root virtual level teratas, ketik "list" di root "/" untuk lihat ini lagi):
+${rootsList}
+
 Semua path relatif terhadap folder aktif (lihat "pwd"). Awali path dengan "/"
-untuk merujuk ke root folder yang diizinkan, contoh: list /Dokumen/Kerja`;
+untuk merujuk ke root virtual di atas, contoh: list /Documents/Kerja`;
+}
 
 function tokenize(text) {
   // Normalisasi smart quotes (‘’“”) jadi straight quotes ('") — keyboard HP
@@ -204,10 +223,10 @@ function formatBytes(bytes) {
 
 export async function handleCommand(rawText, dscMessage = null) {
   const text = rawText.trim();
-  if (!text) return HELP_TEXT;
+  if (!text) return buildHelpText();
 
   const tokens = tokenize(text);
-  if (tokens.length === 0) return HELP_TEXT;
+  if (tokens.length === 0) return buildHelpText();
   
   // PERBAIKAN: Mengambil indeks pertama [0] sebagai string command murni
   const command = tokens[0].toLowerCase();
@@ -216,7 +235,7 @@ export async function handleCommand(rawText, dscMessage = null) {
   try {
     switch (command) {
       case 'help':
-        return HELP_TEXT;
+        return buildHelpText();
 
       case 'pwd':
         return `📂 Folder aktif saat ini: \`${displayDir()}\``;
@@ -225,7 +244,15 @@ export async function handleCommand(rawText, dscMessage = null) {
         if (args.length < 1) return `📂 Folder aktif saat ini: \`${displayDir()}\``;
 
         const targetArg = args[0];
+        const isClimbAttempt = targetArg.replace(/\\/g, '/').startsWith('..');
         const newDir = resolvePathArg(targetArg);
+
+        // Kalau user coba naik (".." atau "../xxx") tapi hasilnya tetap di
+        // root ('.') karena sudah di puncak sandbox, kasih tahu jelas —
+        // jangan seolah-olah berhasil "pindah folder" padahal diam di tempat.
+        if (isClimbAttempt && newDir === '.' && currentDir === '.') {
+          return `📂 Sudah di folder root (\`${displayDir()}\`), tidak bisa naik lebih tinggi lagi.`;
+        }
 
         // Validasi folder benar-benar ada & memang folder (bukan file), lewat
         // listDir supaya sekalian kena aturan safeResolve/whitelist di fsops.js
