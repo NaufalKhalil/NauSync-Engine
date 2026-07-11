@@ -43,3 +43,4 @@ service_account.json
 reports/
 history/
 backup/
+bot-log.txt
