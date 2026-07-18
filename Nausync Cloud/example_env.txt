@@ -6,9 +6,16 @@ DISCORD_TOKEN=???
 
 DISCORD_OWNER_ID=???
 
+# Label pembeda laptop ini (dipakai di subject/isi email PIN & alert, serta
+# pesan startup Discord) — supaya kalau kamu punya beberapa laptop dengan
+# kode & email tujuan PIN yang sama, kamu bisa langsung bedakan email/pesan
+# yang mana punya laptop yang mana. Isi bebas, contoh: TCN, LNV.
+# Kalau tidak diisi, otomatis fallback ke hostname Windows laptop ini.
+LAPTOP_LABEL=???
+
 # Secure Path
 
-SECURE_ENV_PATH=???
+SECURE_ENV_PATH=C:/Users/Naufal Khalil/AppData/Local/NausyncSecure/nausync-secure.env
 
 # Daftar folder yang boleh diakses bot, format: Nama1=Path1;Nama2=Path2;...
 # - "Nama" jadi nama folder virtual level teratas di bot (ketik "list" untuk lihat)

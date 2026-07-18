@@ -75,7 +75,7 @@ export async function sendAlertEmail(subject, body) {
   await getTransporter().sendMail({
     from: config.smtpUser,
     to: config.pinAlertEmail,
-    subject: `🔐 Nausync Cloud — ${subject}`,
+    subject: `🔐 Nausync Cloud [${config.laptopLabel}] — ${subject}`,
     text: body,
   });
 }
@@ -97,6 +97,9 @@ export async function sendAlertEmail(subject, body) {
 function buildPinEmailHtml(pin, introText) {
   return `
   <div style="font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; border: 1px solid #e2e2e2; border-radius: 12px;">
+    <div style="display: inline-block; margin-bottom: 12px; padding: 4px 10px; background: #111; color: #fff; border-radius: 999px; font-size: 12px; font-weight: bold; letter-spacing: 1px;">
+      💻 LAPTOP: ${config.laptopLabel}
+    </div>
     <p style="font-size: 14px; color: #333; line-height: 1.5;">${introText}</p>
     <div style="margin: 20px 0; padding: 16px; background: #f5f5f7; border-radius: 8px; text-align: center;">
       <div style="font-family: 'Courier New', monospace; font-size: 26px; letter-spacing: 4px; font-weight: bold; color: #111; user-select: all; -webkit-user-select: all;">${pin}</div>
@@ -111,36 +114,40 @@ async function sendPinDeliveryEmail(subject, pin, introText) {
   await getTransporter().sendMail({
     from: config.smtpUser,
     to: config.pinAlertEmail,
-    subject: `🔐 Nausync Cloud — ${subject}`,
-    text: `${introText}\n\nPIN: ${pin}`,
+    subject: `🔐 Nausync Cloud [${config.laptopLabel}] — ${subject}`,
+    text: `[Laptop: ${config.laptopLabel}]\n\n${introText}\n\nPIN: ${pin}`,
     html: buildPinEmailHtml(pin, introText),
   });
 }
 
-// Dipanggil sekali saat bot startup (dari index.js). Kalau belum ada PIN
-// tersimpan (first run), generate PIN baru otomatis & kirim ke email
-// terpisah (BUKAN lewat Discord), sesuai desain: PIN harus independen
-// dari kanal Discord yang mungkin di-hack.
+// Dipanggil SETIAP KALI bot startup (dari index.js) — bukan cuma first run.
+// Setiap bot baru hidup (start pertama kali ATAUPUN restart), PIN LAMA
+// (apa pun nilainya) otomatis di-generate ulang & PIN baru dikirim ke email
+// terpisah (BUKAN lewat Discord), sesuai desain: PIN harus independen dari
+// kanal Discord yang mungkin di-hack.
+//
+// Ini SENGAJA tidak lagi "cuma sekali doang" (dulu ada logic
+// forcePinResetOnce terpisah yang jalan setelah ini, khusus migrasi versi
+// lama) — supaya tidak ada 2 mekanisme "kirim PIN saat startup" yang bisa
+// nyala bareng dan mengirim 2 email PIN berbeda dalam 1x nyala bot.
+// Sekarang cukup SATU fungsi ini, dipanggil SATU kali per startup di
+// index.js, hasilnya SATU email PIN per kali bot nyala/restart.
 export async function initPin() {
-  const store = loadStore();
-  if (store) return; // sudah ada, tidak perlu generate ulang
-
   const pin = generateRandomPin();
   const salt = crypto.randomBytes(16).toString('hex');
   saveStore({ hash: hashPin(pin, salt), salt, updatedAt: new Date().toISOString() });
 
   try {
     await sendPinDeliveryEmail(
-      'PIN awal untuk command berbahaya',
+      'PIN baru (bot baru saja nyala/restart)',
       pin,
-      'PIN untuk validasi command berbahaya (shutdown/restart/purge/preview folder rahasia). Dibuat otomatis saat bot pertama kali dijalankan. Simpan baik-baik — PIN ini tidak akan berubah sampai kamu ganti sendiri lewat command "chgpin".'
+      'PIN untuk validasi command berbahaya (shutdown/restart/purge/preview folder rahasia). PIN LAMA (apa pun nilainya, termasuk kalau kamu sudah lupa) otomatis di-reset setiap kali bot nyala/restart — ini PIN yang berlaku SEKARANG. Kalau kamu TIDAK baru saja menyalakan/restart laptop ini, segera cek keamanan laptop & akun Discord-mu.'
     );
   } catch (err) {
     // Kalau SMTP belum di-setting / gagal kirim, tampilkan di log server
-    // sebagai fallback SATU KALI ini saja, supaya owner tidak terkunci
-    // total dari fitur PIN sejak hari pertama.
-    console.warn(`⚠️ Gagal kirim email PIN awal (${err.message}).`);
-    console.warn(`⚠️ PIN awal (fallback, HANYA muncul di log ini): ${pin}`);
+    // sebagai fallback, supaya owner tidak terkunci total dari fitur PIN.
+    console.warn(`⚠️ Gagal kirim email PIN startup (${err.message}).`);
+    console.warn(`⚠️ PIN startup (fallback, HANYA muncul di log ini): ${pin}`);
   }
 }
 
@@ -259,12 +266,43 @@ export function verifyPin(inputPin) {
 // email berisi PIN baru (jadi juga otomatis jadi "alert" versi lain: kalau
 // kamu dapat email PIN baru padahal kamu tidak baru saja jalanin command
 // apa pun, itu tanda ada yang salah gunakan PIN-mu).
-export async function verifyAndRotatePin(inputPin, reason) {
+// --- State sementara buat command "restart" (lihat opts.silent di bawah) ---
+// Cuma disimpan di MEMORI (bukan file), sengaja begitu: kalau bot mati/
+// restart, state ini otomatis hilang begitu saja — dan memang seharusnya,
+// karena begitu bot hidup lagi, initPin() di index.js SUDAH otomatis kirim
+// PIN baru sendiri, jadi pending pin di sini otomatis jadi tidak relevan
+// lagi (sudah keburu ke-superseded oleh PIN yang lebih baru dari startup).
+let pendingSilentPin = null; // { pin, reason, setAt }
+
+export async function verifyAndRotatePin(inputPin, reason, opts = {}) {
+  const { silent = false } = opts;
+
   verifyPin(inputPin); // lempar Error kalau salah/lockout, tidak lanjut ke bawah
 
   const newPin = generateRandomPin();
   const salt = crypto.randomBytes(16).toString('hex');
   saveStore({ hash: hashPin(newPin, salt), salt, updatedAt: new Date().toISOString() });
+
+  if (silent) {
+    // KENAPA INI PERLU: dipakai KHUSUS buat command "restart". Command itu
+    // bikin laptop beneran reboot dalam ~15 detik, dan begitu bot hidup
+    // lagi setelah boot, initPin() di index.js OTOMATIS generate + kirim
+    // PIN BARU LAGI. Kalau di sini kita JUGA langsung email PIN hasil
+    // rotasi ini, owner dapat 2 EMAIL PIN BERBEDA cuma buat 1x restart —
+    // dan email yang PERTAMA langsung basi begitu email KEDUA (dari
+    // startup) nyampe, jadi cuma bikin bingung PIN mana yang berlaku.
+    //
+    // Solusinya: PIN di atas TETAP di-rotate (PIN lama tetap langsung
+    // hangus, sama seperti command berbahaya lain), tapi EMAIL-nya
+    // DITAHAN dulu di sini (pendingSilentPin), BUKAN dihilangkan — kalau
+    // restart-nya ternyata GAGAL dieksekusi atau keburu dibatalkan pakai
+    // "cancel" (laptop TIDAK jadi reboot, jadi initPin() TIDAK akan pernah
+    // jalan buat gantiin), resendPendingSilentPinIfAny() di bawah akan
+    // tetap mengirim PIN ini lewat email — supaya owner tidak pernah
+    // sampai terkunci total gara-gara PIN baru tidak pernah diberitahukan.
+    pendingSilentPin = { pin: newPin, reason, setAt: Date.now() };
+    return;
+  }
 
   // Sengaja tidak di-`await` gagal-total-kan command aslinya kalau kirim
   // email rotasi ini somehow error (mis. SMTP lagi down) — command yang
@@ -275,6 +313,32 @@ export async function verifyAndRotatePin(inputPin, reason) {
     newPin,
     `PIN lama baru saja dipakai untuk menjalankan "${reason}" dan sekarang SUDAH TIDAK BERLAKU LAGI — ini PIN barunya. Rotasi otomatis ini terjadi setiap kali PIN berhasil dipakai, supaya PIN yang mungkin pernah "kelihatan" di histori chat Discord tidak bisa dipakai ulang oleh siapa pun. Kalau kamu TIDAK baru saja menjalankan "${reason}", itu tanda PIN lama-mu bocor dan disalahgunakan orang lain — segera amankan akun Discord-mu.`
   ).catch((err) => console.warn(`⚠️ Gagal kirim email rotasi PIN otomatis: ${err.message}`));
+}
+
+// Dipanggil dari commands.js di 2 tempat: (1) catch block command "restart"
+// kalau shutdown.exe /r GAGAL dijalankan, (2) command "cancel" kalau
+// berhasil membatalkan restart yang masih pending. Di kedua kasus itu,
+// laptop TIDAK JADI reboot, jadi email PIN yang tadi ditahan (lihat
+// opts.silent di atas) WAJIB tetap dikirim sekarang juga — kalau tidak,
+// owner terkunci total (PIN sudah ke-rotate tapi tidak pernah tahu PIN
+// barunya apa). No-op (tidak ngapa-ngapain) kalau memang tidak ada PIN
+// yang lagi ditahan.
+export async function resendPendingSilentPinIfAny(context) {
+  if (!pendingSilentPin) return;
+
+  const { pin, reason } = pendingSilentPin;
+  pendingSilentPin = null; // clear duluan, biar tidak ke-kirim dobel kalau ini somehow ke-trigger 2x
+
+  try {
+    await sendPinDeliveryEmail(
+      `PIN baru (rotasi tertunda dari "${reason}")`,
+      pin,
+      `PIN lama sudah dipakai untuk "${reason}" dan sekarang SUDAH TIDAK BERLAKU LAGI — ini PIN barunya. Email ini SENGAJA ditunda sebentar (bukan langsung dikirim), karena "${reason}" seharusnya bikin bot restart otomatis dan mengirim PIN baru sendiri lewat jalur startup — tapi ternyata itu tidak terjadi (${context}), jadi PIN barunya dikirim sekarang lewat jalur ini supaya kamu tidak terkunci.`
+    );
+  } catch (err) {
+    console.warn(`⚠️ Gagal kirim email PIN tertunda (${err.message}).`);
+    console.warn(`⚠️ PIN tertunda (fallback, HANYA muncul di log ini): ${pin}`);
+  }
 }
 
 // Dipanggil dari command "chgpin <pin_lama>". Perlu PIN LAMA yang valid

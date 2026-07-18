@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import dotenv from 'dotenv';
 
 function required(name) {
@@ -160,8 +161,21 @@ function parseTrashRetentionDays(raw) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 30;
 }
 
+// Label pembeda laptop (mis. "TCN" / "LNV") — dipakai di pinStore.js supaya
+// email PIN/alert dari 2 laptop yang beda (tapi kode & email tujuan sama)
+// bisa langsung dibedakan tanpa harus buka isi emailnya dulu.
+//
+// Kalau LAPTOP_LABEL tidak diset di .env, fallback ke hostname Windows
+// (mis. "DESKTOP-ABC123") supaya tetap ada pembeda otomatis walau lupa
+// nambahin env var-nya pas setup ulang.
+function parseLaptopLabel(raw) {
+  const trimmed = (raw || '').trim();
+  return trimmed || os.hostname();
+}
+
 export const config = {
   allowedRoots: parseAllowedRoots(required('ALLOWED_ROOTS')),
+  laptopLabel: parseLaptopLabel(process.env.LAPTOP_LABEL),
   blockedPaths: parseBlockedPaths(process.env.BLOCKED_PATHS),
   confidentialPaths: parseConfidentialPaths(process.env.CONFIDENTIAL_PATHS),
   rcloneRemote: required('RCLONE_REMOTE'),

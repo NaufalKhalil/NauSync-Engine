@@ -8,7 +8,7 @@ import os from 'node:os';
 import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
-import { verifyPin, changePin, verifyAndRotatePin, sendAlertEmail } from './pinStore.js';
+import { verifyPin, changePin, verifyAndRotatePin, resendPendingSilentPinIfAny, sendAlertEmail } from './pinStore.js';
 
 const execAsync = promisify(exec);
 
@@ -29,12 +29,12 @@ const PIN_SIZE_THRESHOLD = 50 * 1024 * 1024; // 50MB
 // (lihat verifyAndRotatePin di pinStore.js), (2) label di email alert
 // "command berhasil dieksekusi" yang dikirim SETELAH aksi command-nya
 // benar-benar selesai (lihat pemanggilan sendAlertEmail di tiap case).
-async function requirePin(args, reason) {
+async function requirePin(args, reason, opts = {}) {
   if (args.length === 0) {
     throw new Error('Command ini butuh PIN keamanan di argumen terakhir. Contoh: `shutdown Ab3xQ9kZ`.');
   }
   const pin = args[args.length - 1];
-  await verifyAndRotatePin(pin, reason);
+  await verifyAndRotatePin(pin, reason, opts);
   return args.slice(0, -1);
 }
 
@@ -1448,7 +1448,16 @@ export async function handleCommand(rawText, dscMessage = null) {
       }
 
       case 'shutdown': {
-        await requirePin(args, 'shutdown');
+        // silent: true -> sama alasannya kayak "restart" (lihat komentar di
+        // situ): PIN tetap langsung di-rotate, tapi email-nya DITAHAN dulu.
+        // Begitu laptop mati, bot ikut mati (offline) — jadi PIN barunya
+        // percuma dikirim sekarang, toh tidak ada command yang bisa
+        // dijalankan sampai laptop dinyalain lagi. Begitu laptop dinyalain
+        // & bot hidup lagi, initPin() di startup OTOMATIS kirim PIN BARU
+        // LAGI — kalau di sini juga kirim, jadi 2x email PIN buat 1x
+        // shutdown, padahal PIN yang dari sini sudah keburu basi begitu
+        // PIN dari startup nyampe.
+        await requirePin(args, 'shutdown', { silent: true });
 
         // BUG FIX: sebelumnya exec() dipanggil tanpa callback/await sama
         // sekali — kalau shutdown.exe gagal dijalankan (path salah,
@@ -1461,6 +1470,10 @@ export async function handleCommand(rawText, dscMessage = null) {
         try {
           await execAsync('C:\\Windows\\System32\\shutdown.exe /s /f /t 15');
         } catch (err) {
+          // Shutdown gagal -> laptop TIDAK jadi mati -> bot TETAP hidup ->
+          // initPin() dari startup TIDAK akan pernah jalan buat gantiin
+          // PIN yang tadi ditahan. Kirim sekarang supaya tidak terkunci.
+          await resendPendingSilentPinIfAny('shutdown gagal dieksekusi').catch(() => {});
           sendAlertEmail(
             '❌ Command "shutdown" GAGAL dieksekusi',
             `PIN valid, tapi command shutdown.exe GAGAL dijalankan.\nError: ${err.message}\nWaktu: ${new Date().toISOString()}`
@@ -1476,11 +1489,21 @@ export async function handleCommand(rawText, dscMessage = null) {
       }
 
       case 'restart': {
-        await requirePin(args, 'restart');
+        // silent: true -> PIN tetap di-rotate (PIN lama tetap langsung
+        // hangus), TAPI email rotasinya DITAHAN dulu (lihat pinStore.js).
+        // Soalnya kalau restart-nya sukses, laptop bakal beneran reboot &
+        // bot yang hidup lagi OTOMATIS kirim PIN baru sendiri (initPin() di
+        // index.js) — kalau di sini juga kirim, jadi 2x email PIN buat 1x
+        // restart. Fallback resendPendingSilentPinIfAny() di catch block
+        // bawah ini yang jaga-jaga kalau ternyata restart-nya GAGAL (jadi
+        // laptop tidak reboot, initPin() tidak akan pernah jalan buat
+        // gantiin) — begitu juga di case "cancel" kalau restart dibatalkan.
+        await requirePin(args, 'restart', { silent: true });
 
         try {
           await execAsync('C:\\Windows\\System32\\shutdown.exe /r /f /t 15');
         } catch (err) {
+          await resendPendingSilentPinIfAny('restart gagal dieksekusi').catch(() => {});
           sendAlertEmail(
             '❌ Command "restart" GAGAL dieksekusi',
             `PIN valid, tapi command shutdown.exe (/r) GAGAL dijalankan.\nError: ${err.message}\nWaktu: ${new Date().toISOString()}`
@@ -1508,6 +1531,19 @@ export async function handleCommand(rawText, dscMessage = null) {
         } catch (err) {
           return `⚠️ Tidak ada shutdown/restart yang bisa dibatalkan (atau gagal: ${err.message}).`;
         }
+
+        // Baik "shutdown" maupun "restart" sekarang sama-sama pakai
+        // opts.silent (lihat komentar di kedua case itu) — PIN hasil
+        // rotasinya sengaja ditahan emailnya karena laptop mestinya bakal
+        // mati/reboot dulu (baru initPin() di startup yang kirim PIN
+        // baru). Tapi kalau ternyata dibatalkan di sini pakai "cancel",
+        // laptop TETAP menyala & bot TETAP hidup — initPin() tidak akan
+        // pernah jalan buat gantiin PIN yang tadi ditahan, jadi kirim
+        // sekarang lewat jalur ini. No-op kalau memang tidak ada PIN yang
+        // sedang ditahan (mis. "cancel" dipanggil tanpa ada shutdown/
+        // restart yang pending).
+        await resendPendingSilentPinIfAny('shutdown/restart dibatalkan pakai "cancel"').catch(() => {});
+
         sendAlertEmail(
           '🛑 Shutdown/restart dibatalkan',
           `Command "cancel" berhasil membatalkan shutdown/restart yang sedang pending, pada ${new Date().toISOString()}.`

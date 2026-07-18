@@ -38,7 +38,7 @@ const client = new Client({
 
 // Fungsi untuk menyalakan fitur utama setelah berhasil login ke Discord
 client.once('ready', async () => {
-  logger.info(`Bot Nausync Cloud sukses terhubung ke Discord sebagai: ${client.user.tag}`);
+  logger.info(`Bot Nausync Cloud [${config.laptopLabel}] sukses terhubung ke Discord sebagai: ${client.user.tag}`);
   logger.info(`Kode command yang aktif: ${BUILD_TAG}`);
   
   // Cek kesiapan rclone sekali saja saat awal start
@@ -49,14 +49,14 @@ client.once('ready', async () => {
     logger.warn('rclone belum siap / remote belum dikonfigurasi.');
   }
 
-  // Generate PIN keamanan (sekali saja, first run) & kirim ke email —
-  // lihat pinStore.js. Command berbahaya (shutdown/restart/purge) butuh
-  // PIN ini, independen dari Discord, supaya tetap aman walau akun
-  // Discord kena hack.
+  // Generate PIN keamanan BARU & kirim ke email SETIAP KALI bot nyala
+  // (start pertama kali maupun restart) — lihat initPin() di pinStore.js.
+  // Command berbahaya (shutdown/restart/purge) butuh PIN ini, independen
+  // dari Discord, supaya tetap aman walau akun Discord kena hack.
   try {
     await initPin();
     startPinExpiryWatcher();
-    logger.info('PIN keamanan siap (cek pin.store.json / email kalau baru pertama kali).');
+    logger.info(`PIN keamanan baru [${config.laptopLabel}] sudah dikirim ke email.`);
   } catch (err) {
     logger.error(err, 'Gagal inisialisasi PIN keamanan.');
   }
@@ -75,7 +75,7 @@ client.once('ready', async () => {
       const owner = await client.users.fetch(ownerId);
       
       // Kirim pesan salam pembuka ke DM pribadi Anda
-      await owner.send(`🟢 *Bot Nausync Cloud Telah Aktif!* \nLaptop Anda di rumah baru saja dinyalakan/login dan sistem background sudah *stand-by* menerima perintah Anda.`);
+      await owner.send(`🟢 *Bot Nausync Cloud [${config.laptopLabel}] Telah Aktif!* \nLaptop Anda di rumah baru saja dinyalakan/login dan sistem background sudah *stand-by* menerima perintah Anda.`);
       logger.info('Notifikasi startup sukses dikirim ke DM owner.');
     }
   } catch (err) {
