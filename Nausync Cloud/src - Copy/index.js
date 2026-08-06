@@ -1,10 +1,11 @@
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import pino from 'pino';
-import { handleCommand, BUILD_TAG } from './commands.js';
+import { handleCommand, BUILD_TAG, clearBotMessagesInChannel } from './commands.js';
 import { checkRcloneReady } from './rclone.js';
 import { initPin, startPinExpiryWatcher, sendAlertEmail } from './pinStore.js';
 import { purgeExpiredTrash } from './fsops.js';
 import { config } from './config.js';
+import { toEmbedPayload } from './embeds.js';
 
 const logger = pino({ level: 'info' });
 
@@ -67,15 +68,48 @@ client.once('ready', async () => {
   runTrashRetentionSweep();
   setInterval(runTrashRetentionSweep, TRASH_SWEEP_INTERVAL_MS);
 
-  // --- FITUR BARU: KIRIM PESAN NOTIFIKASI STARTUP LANGSUNG KE DM OWNER ---
+  // --- FITUR BARU: AUTO-BERSIHKAN RIWAYAT CHAT BOT DARI SESI SEBELUMNYA ---
+  // Setiap kali bot baru nyala/restart, sapu bersih semua balasan BOT
+  // (bukan pesan owner — lihat batasan Discord API di komentar
+  // clearBotMessagesInChannel() di commands.js) yang masih ketinggalan di
+  // DM dari sesi-sesi sebelumnya, supaya histori chat selalu "fresh" tiap
+  // kali laptop/bot baru dinyalakan lagi. Dijalankan SEBELUM notifikasi
+  // "Bot Aktif" di bawah, supaya notifikasi yang baru itu sendiri tidak
+  // ikut kesapu sama proses ini.
+  //
+  // Sengaja TIDAK butuh PIN (beda dari command manual "clearchat") karena
+  // ini bukan aksi yang diminta owner lewat Discord — ini housekeeping
+  // otomatis milik bot sendiri, dan cuma menyentuh pesan BOT sendiri (tidak
+  // pernah pesan owner), jadi risikonya sama seperti bot mengedit/menghapus
+  // balasannya sendiri di command lain. Bisa dimatikan lewat
+  // AUTO_CLEAR_CHAT_ON_START=false di .env kalau tidak diinginkan.
+  let ownerDmChannel = null;
   try {
     const ownerId = process.env.DISCORD_OWNER_ID;
     if (ownerId) {
-      // Ambil objek pengguna berdasarkan ID pemilik di file .env
       const owner = await client.users.fetch(ownerId);
-      
+      ownerDmChannel = await owner.createDM();
+
+      if (config.autoClearChatOnStart) {
+        logger.info(`Auto-clearchat [${config.laptopLabel}]: mulai bersihin riwayat chat bot dari sesi sebelumnya...`);
+        const result = await clearBotMessagesInChannel(ownerDmChannel, client.user.id);
+        if (result.error) {
+          logger.warn(result.error, 'Auto-clearchat: berhenti di tengah jalan saat startup.');
+        } else {
+          logger.info(`Auto-clearchat [${config.laptopLabel}]: selesai, ${result.deletedCount} pesan bot lama terhapus (${result.scanned} pesan discan).`);
+        }
+      }
+    }
+  } catch (err) {
+    logger.error(err, 'Auto-clearchat saat startup gagal dijalankan.');
+  }
+  // -------------------------------------------------------------------
+
+  // --- FITUR BARU: KIRIM PESAN NOTIFIKASI STARTUP LANGSUNG KE DM OWNER ---
+  try {
+    if (ownerDmChannel) {
       // Kirim pesan salam pembuka ke DM pribadi Anda
-      await owner.send(`🟢 *Bot Nausync Cloud [${config.laptopLabel}] Telah Aktif!* \nLaptop Anda di rumah baru saja dinyalakan/login dan sistem background sudah *stand-by* menerima perintah Anda.`);
+      await ownerDmChannel.send(toEmbedPayload(`✅ **Bot Nausync Cloud [${config.laptopLabel}] Telah Aktif!**\nLaptop Anda di rumah baru saja dinyalakan/login dan sistem background sudah *stand-by* menerima perintah Anda.`));
       logger.info('Notifikasi startup sukses dikirim ke DM owner.');
     }
   } catch (err) {
@@ -99,7 +133,7 @@ client.on('messageCreate', async (message) => {
 
     // Kirim pesan teks akhir jika ada log info tambahan
     if (reply && !reply.includes("Proses transfer selesai")) {
-      await message.reply(reply);
+      await message.reply(toEmbedPayload(reply));
     }
 
     // Catat balasan bot ke log juga (dipotong biar log tidak kebanjiran),
@@ -109,7 +143,7 @@ client.on('messageCreate', async (message) => {
     logger.info(`Balasan bot untuk "${text}": ${replyPreview}`);
   } catch (err) {
     logger.error(err, `Gagal memproses command "${text}"`);
-    await message.reply('Terjadi kesalahan internal saat menjalankan perintah.');
+    await message.reply(toEmbedPayload('❌ Terjadi kesalahan internal saat menjalankan perintah.'));
   }
 });
 

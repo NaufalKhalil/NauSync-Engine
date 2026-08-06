@@ -2,11 +2,14 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { spawn } from 'node:child_process';
+import { PassThrough } from 'node:stream';
 import { safeResolve, isRootItself, isBlocked, containsBlockedPath, listRootNames, confidentialAncestorOf } from './pathGuard.js';
 import { config } from './config.js';
 
-// NOTE: fitur "archive" (compress ke .zip) butuh package "archiver" —
-// kalau belum terinstall, jalankan `npm install archiver` di folder project.
+// NOTE: fitur "dz"/"downloadzip"/"dlzip" (compress ke .zip lalu upload)
+// butuh package "archiver" — kalau belum terinstall, jalankan
+// `npm install archiver` di folder project.
 //
 // "archiver" itu package CommonJS, jadi tetap di-load lewat createRequire
 // (bukan `import` ES Module) supaya tidak kena masalah interop CJS/ESM
@@ -16,10 +19,8 @@ const require = createRequire(import.meta.url);
 // PERUBAHAN PENTING (archiver v8+): package "archiver" versi lama dulu
 // dipanggil sebagai FUNGSI langsung — `archiver('zip', options)`. Mulai
 // versi 8, API-nya diubah total jadi BERBASIS CLASS: `new ZipArchive(options)`
-// (nama export-nya "ZipArchive", bukan lagi default function). Ini BUKAN
-// masalah instalasi — memang breaking change resmi dari package-nya
-// sendiri (lihat contoh resmi di npm/GitHub archiverjs/node-archiver).
-// Ambil class ZipArchive-nya di sini.
+// (nama export-nya "ZipArchive", bukan lagi default function). Ambil class
+// ZipArchive-nya di sini.
 const archiverModule = require('archiver');
 const ZipArchive = archiverModule.ZipArchive;
 
@@ -311,20 +312,30 @@ export async function purgeExpiredTrash() {
   return purged;
 }
 
-// Compress srcAbsPath (file ATAU folder) jadi satu file .zip di
-// destZipAbsPath. Dipakai command "archive" — tujuannya bikin transfer ke
-// Google Drive lebih hemat bandwidth/waktu buat folder isinya banyak file
-// kecil (1 koneksi upload, bukan ratusan file kecil satu-satu).
+// --- Stream archive langsung ke Google Drive, TANPA nulis file .zip ke
+// disk lokal dulu --- (dipakai command "dz"/"downloadzip"/"dlzip")
 //
-// Sengaja return Promise manual (bukan async/await polos) karena stream
-// `archiver` berbasis event ('close'/'error'), bukan sesuatu yang bisa
-// di-await langsung.
-export function createZip(srcAbsPath, destZipAbsPath) {
+// archiver di-pipe LANGSUNG ke stdin proses "rclone rcat" (mode upload
+// dari stdin, tanpa file perantara). Data mengalir compress->upload dalam
+// SATU alur stream yang sama, tidak pernah menyentuh disk lokal — lebih
+// cepat (tidak ada I/O file zip) dan tidak makan storage lokal ekstra
+// dibanding compress-ke-file-dulu-baru-upload.
+//
+// Trade-off yang disadari: kalau upload gagal di TENGAH jalan, tidak ada
+// file zip lokal yang bisa langsung diretry (harus compress ulang dari
+// awal). Untuk pola pakai bot ini (command tinggal diulang manual kalau
+// gagal), trade-off ini sepadan dengan kecepatan & hematnya.
+//
+// onProgress (opsional) dipanggil BERKALA (bukan cuma sekali) dengan
+// { compressedBytes } — total byte HASIL kompres yang SUDAH mengalir ke
+// stdin proses rclone sejauh ini. LIHAT CATATAN PENTING di bawah soal
+// kenapa ini dilaporkan sebagai jumlah byte, bukan persentase.
+//
+// Resolve dengan { compressedBytes } — total byte HASIL kompres FINAL yang
+// mengalir (dihitung manual lewat PassThrough counter, karena tidak ada
+// file .zip lokal yang bisa langsung di-stat ukurannya).
+export function streamArchiveToRemote(srcAbsPath, remoteTarget, onProgress) {
   return new Promise((resolve, reject) => {
-    // Cek di sini (BUKAN di top-level file) supaya kalau package "archiver"
-    // bermasalah, cuma command "archive" ini yang gagal dengan pesan jelas —
-    // command lain (list/copy/preview/dll) tetap jalan normal, bot tidak
-    // ikut mati total.
     if (typeof ZipArchive !== 'function') {
       reject(new Error(
         'Package "archiver" tidak menyediakan class "ZipArchive" (kemungkinan ' +
@@ -344,15 +355,83 @@ export function createZip(srcAbsPath, destZipAbsPath) {
       return;
     }
 
-    const output = fsSync.createWriteStream(destZipAbsPath);
-    // API BARU (archiver v8+): instantiate class-nya, bukan panggil sebagai
-    // fungsi seperti versi lama (`archiver('zip', options)`).
     const archive = new ZipArchive({ zlib: { level: 9 } });
 
-    output.on('close', () => resolve(destZipAbsPath));
-    output.on('error', reject);
-    archive.on('error', reject);
-    archive.pipe(output);
+    // Hitung byte HASIL kompres yang benar-benar lewat, sebelum masuk ke
+    // stdin rclone — dipakai buat laporan ukuran zip final di akhir, DAN
+    // (lihat catatan progressTimer di bawah) buat progress berkala.
+    const counter = new PassThrough();
+    let compressedBytes = 0;
+    counter.on('data', (chunk) => { compressedBytes += chunk.length; });
+
+    let rclone;
+    try {
+      rclone = spawn('rclone', ['rcat', remoteTarget]);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
+    let settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      if (progressTimer) clearInterval(progressTimer);
+      reject(err);
+    };
+
+    archive.on('error', fail);
+    rclone.on('error', fail);
+    rclone.stdin.on('error', fail); // tangkap EPIPE dkk kalau rclone mati duluan
+
+    // --- PERBAIKAN: progress berbasis byte yang MENGALIR KE RCLONE, bukan
+    // byte yang dibaca dari disk ---
+    //
+    // Versi sebelumnya melapor progress lewat event 'progress' bawaan
+    // `archiver`, yang isinya PEMBACAAN sumber asli dari disk lokal (fase
+    // compress). Masalahnya: baca dari disk lokal itu CEPAT (dibatasi
+    // kecepatan disk), sedangkan upload ke Google Drive lewat "rclone rcat"
+    // itu LAMBAT (dibatasi kecepatan internet) — begitu archiver selesai
+    // membaca semua file sumber, event 'progress' langsung BERHENTI TOTAL
+    // dan angka terakhirnya kelihatan "100%", padahal saat itu isi zip-nya
+    // BARU SEBAGIAN yang benar-benar sampai di Google Drive (sisanya masih
+    // antre dikirim lewat internet). Itu penyebab laporan "100%" yang
+    // ternyata bohong / prematur.
+    //
+    // Perbaikannya: lapor `compressedBytes` (byte yang benar-benar sudah
+    // ditulis ke stdin proses rclone) lewat INTERVAL berkala, SELAMA
+    // SELURUH proses berlangsung (bukan cuma pas archiver masih baca
+    // disk) — sampai proses rclone benar-benar close. Karena backpressure
+    // bawaan Node.js stream (archive -> counter -> rclone.stdin), angka
+    // ini secara alami mengikuti kecepatan rclone MENCERNA data yang
+    // dikirim, yang dibatasi kecepatan upload internetnya sendiri — jauh
+    // lebih representatif dibanding progress baca disk semata.
+    //
+    // Ukuran akhir zip TIDAK diketahui sampai proses ini benar-benar
+    // selesai (di-stream, bukan file jadi yang sudah bisa di-stat), jadi
+    // yang dilaporkan sengaja JUMLAH BYTE TERKIRIM (angka naik terus),
+    // BUKAN persentase — daripada nampilin persentase palsu yang keliatan
+    // "selesai" padahal belum, mending jujur tampilkan progresnya sebagai
+    // angka yang terus bertambah.
+    let progressTimer = null;
+    if (onProgress) {
+      progressTimer = setInterval(() => {
+        onProgress({ compressedBytes });
+      }, 3000);
+    }
+
+    rclone.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      if (progressTimer) clearInterval(progressTimer);
+      if (code === 0) {
+        resolve({ compressedBytes });
+      } else {
+        reject(new Error(`rclone rcat keluar dengan error code ${code}`));
+      }
+    });
+
+    archive.pipe(counter).pipe(rclone.stdin);
 
     if (stat.isDirectory()) {
       archive.directory(srcAbsPath, path.basename(srcAbsPath));

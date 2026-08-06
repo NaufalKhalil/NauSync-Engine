@@ -150,6 +150,16 @@ function loadSecureEnv() {
   };
 }
 
+// Toggle fitur auto-bersihkan riwayat chat BOT (bukan pesan owner) setiap
+// kali bot baru nyala/restart — lihat clearBotMessagesInChannel() di
+// commands.js & pemanggilannya di index.js. Default AKTIF (true) kalau
+// tidak diset di .env. Set "AUTO_CLEAR_CHAT_ON_START=false" di .env kalau
+// mau matiin (mis. karena mau simpan riwayat balasan bot yang lama).
+function parseAutoClearChatOnStart(raw) {
+  const trimmed = (raw || '').trim().toLowerCase();
+  return trimmed !== 'false' && trimmed !== '0';
+}
+
 // Berapa hari item di dalam ".trash" (hasil "delete") dibiarkan sebelum
 // otomatis dihapus PERMANEN oleh sweep harian (lihat purgeExpiredTrash() di
 // fsops.js & pemanggilnya di index.js). Default 30 hari kalau tidak diset
@@ -181,6 +191,7 @@ export const config = {
   rcloneRemote: required('RCLONE_REMOTE'),
   rcloneStagingFolder: process.env.RCLONE_STAGING_FOLDER || 'nausync-staging',
   trashRetentionDays: parseTrashRetentionDays(process.env.TRASH_RETENTION_DAYS),
+  autoClearChatOnStart: parseAutoClearChatOnStart(process.env.AUTO_CLEAR_CHAT_ON_START),
 
   // --- Konfigurasi PIN keamanan (lihat pinStore.js) ---
   // Kredensialnya sendiri dimuat dari file TERPISAH (loadSecureEnv di

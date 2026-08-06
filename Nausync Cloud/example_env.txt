@@ -6,12 +6,20 @@ DISCORD_TOKEN=???
 
 DISCORD_OWNER_ID=???
 
+
 # Label pembeda laptop ini (dipakai di subject/isi email PIN & alert, serta
 # pesan startup Discord) — supaya kalau kamu punya beberapa laptop dengan
 # kode & email tujuan PIN yang sama, kamu bisa langsung bedakan email/pesan
 # yang mana punya laptop yang mana. Isi bebas, contoh: TCN, LNV.
 # Kalau tidak diisi, otomatis fallback ke hostname Windows laptop ini.
-LAPTOP_LABEL=???
+LAPTOP_LABEL=TCN
+
+# (Opsional) Auto-bersihkan riwayat balasan BOT (bukan pesan kamu) di DM
+# setiap kali bot baru nyala/restart, supaya histori chat selalu "fresh".
+# Cuma menghapus pesan milik bot sendiri (batasan Discord API), tidak
+# pernah menyentuh pesan yang kamu ketik. Default aktif kalau baris ini
+# tidak ada / dikosongkan. Isi "false" untuk matikan.
+AUTO_CLEAR_CHAT_ON_START=true
 
 # Secure Path
 
@@ -75,7 +83,8 @@ D:/Project/Coding/Nausync Engine;
 D:/Project/Data Siswa;
 C:/Users/Naufal Khalil/Documents/AYAH;
 D:/Project/Ms Power Point;
-D:/Project/Ms Word
+D:/Project/Ms Word;
+D:/Kenangan
 "
 
 # Nama remote rclone untuk Google Drive
