@@ -4256,3 +4256,142 @@ Node.js v24.16.0
 {"level":30,"time":1792235559538,"pid":2204,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
 {"level":30,"time":1792235570145,"pid":2204,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 1 pesan bot lama terhapus (924 pesan discan)."}
 {"level":30,"time":1792235570612,"pid":2204,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792301105245,"pid":16708,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:16708) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792301105245,"pid":16708,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792301141869,"pid":16708,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792301147350,"pid":16708,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792301149078,"pid":16708,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792301159320,"pid":16708,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 1 pesan bot lama terhapus (924 pesan discan)."}
+{"level":30,"time":1792301160195,"pid":16708,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792381945954,"pid":14404,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:14404) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792381945954,"pid":14404,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792381948182,"pid":14404,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792381953127,"pid":14404,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792381954072,"pid":14404,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792381964444,"pid":14404,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 1 pesan bot lama terhapus (924 pesan discan)."}
+{"level":30,"time":1792381965176,"pid":14404,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792387221056,"pid":17056,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:17056) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792387221056,"pid":17056,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792387228483,"pid":17056,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792387232665,"pid":17056,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792387233722,"pid":17056,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792387246185,"pid":17056,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 1 pesan bot lama terhapus (924 pesan discan)."}
+{"level":30,"time":1792387247219,"pid":17056,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792409193344,"pid":15964,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:15964) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792409193345,"pid":15964,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792409196609,"pid":15964,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792409200793,"pid":15964,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792409201679,"pid":15964,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792409212031,"pid":15964,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 1 pesan bot lama terhapus (924 pesan discan)."}
+{"level":30,"time":1792409212449,"pid":15964,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792475774155,"pid":15548,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:15548) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792475774156,"pid":15548,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792475793026,"pid":15548,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792475797344,"pid":15548,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792475798186,"pid":15548,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792475808811,"pid":15548,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 1 pesan bot lama terhapus (924 pesan discan)."}
+{"level":30,"time":1792475809186,"pid":15548,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792486011639,"pid":17856,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:17856) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792486011639,"pid":17856,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792486054306,"pid":17856,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792486059740,"pid":17856,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792486060921,"pid":17856,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792486068035,"pid":17856,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 1 pesan bot lama terhapus (924 pesan discan)."}
+{"level":30,"time":1792486068930,"pid":17856,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792498995315,"pid":3224,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:3224) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792498995317,"pid":3224,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792499014453,"pid":3224,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792499021016,"pid":3224,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792499021891,"pid":3224,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792499031696,"pid":3224,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 1 pesan bot lama terhapus (924 pesan discan)."}
+{"level":30,"time":1792499032685,"pid":3224,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792502193625,"pid":14020,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:14020) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792502193626,"pid":14020,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792502196405,"pid":14020,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792502202048,"pid":14020,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792502202873,"pid":14020,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792502213248,"pid":14020,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 1 pesan bot lama terhapus (924 pesan discan)."}
+{"level":30,"time":1792502213803,"pid":14020,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792503088904,"pid":15708,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:15708) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792503088905,"pid":15708,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792503091082,"pid":15708,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792503095837,"pid":15708,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792503096729,"pid":15708,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792503107113,"pid":15708,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 1 pesan bot lama terhapus (924 pesan discan)."}
+{"level":30,"time":1792503107850,"pid":15708,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792548903089,"pid":9972,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:9972) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792548903089,"pid":9972,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792548939224,"pid":9972,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792548944228,"pid":9972,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792548945345,"pid":9972,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792548955176,"pid":9972,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 1 pesan bot lama terhapus (924 pesan discan)."}
+{"level":30,"time":1792548955667,"pid":9972,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792583930505,"pid":4060,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:4060) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792583930506,"pid":4060,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792583939379,"pid":4060,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792583948421,"pid":4060,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792583949271,"pid":4060,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792583959558,"pid":4060,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 1 pesan bot lama terhapus (924 pesan discan)."}
+{"level":30,"time":1792583960125,"pid":4060,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792629434331,"pid":17184,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:17184) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792629434332,"pid":17184,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792629445376,"pid":17184,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792629453268,"pid":17184,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792629454083,"pid":17184,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792629460098,"pid":17184,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 1 pesan bot lama terhapus (924 pesan discan)."}
+{"level":30,"time":1792629460767,"pid":17184,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792638235498,"pid":17176,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:17176) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792638235499,"pid":17176,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792638272130,"pid":17176,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792638282338,"pid":17176,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792638286262,"pid":17176,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792638296139,"pid":17176,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 1 pesan bot lama terhapus (924 pesan discan)."}
+{"level":30,"time":1792638296840,"pid":17176,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792644312083,"pid":17176,"hostname":"NauTcn","msg":"Command diterima dari owner via Discord: mode server"}
+{"level":30,"time":1792644313458,"pid":17176,"hostname":"NauTcn","msg":"Balasan bot untuk \"mode server\": 🖥️ **Laptop beralih ke Mode Server!** • Status Sleep: **Never** • Status Hibernate: **Never** ✅ Terverifikasi: standby timeout = Never Laptop Anda akan tetap terjaga selamanya untuk memproses unggahan besar Anda."}
+{"level":30,"time":1792658435286,"pid":3284,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:3284) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792658435287,"pid":3284,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792658438913,"pid":3284,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792658443150,"pid":3284,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792658444087,"pid":3284,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792658453344,"pid":3284,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 2 pesan bot lama terhapus (926 pesan discan)."}
+{"level":30,"time":1792658453926,"pid":3284,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
+{"level":30,"time":1792682514775,"pid":3284,"hostname":"NauTcn","msg":"Command diterima dari owner via Discord: mode hemat"}
+{"level":30,"time":1792682517107,"pid":3284,"hostname":"NauTcn","msg":"Balasan bot untuk \"mode hemat\": 🔋 **Laptop beralih ke Mode Hemat (Default)!** • Status Sleep: **15 Menit** • Status Hibernate: **3 Jam** Laptop akan otomatis tidur jika didiamkan sesuai setingan harian Anda."}
+{"level":30,"time":1792684409497,"pid":8180,"hostname":"NauTcn","msg":"Bot Nausync Cloud [TCN] sukses terhubung ke Discord sebagai: Nausync Cloud TCN#2669"}
+(node:8180) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+{"level":30,"time":1792684409497,"pid":8180,"hostname":"NauTcn","msg":"Kode command yang aktif: cmds-v22-download-blockedpath-fix"}
+{"level":30,"time":1792684412480,"pid":8180,"hostname":"NauTcn","msg":"rclone OK, remote Google Drive terhubung."}
+{"level":30,"time":1792684418893,"pid":8180,"hostname":"NauTcn","msg":"PIN keamanan baru [TCN] sudah dikirim ke email."}
+{"level":30,"time":1792684419914,"pid":8180,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: mulai bersihin riwayat chat bot dari sesi sebelumnya..."}
+{"level":30,"time":1792684431239,"pid":8180,"hostname":"NauTcn","msg":"Auto-clearchat [TCN]: selesai, 2 pesan bot lama terhapus (927 pesan discan)."}
+{"level":30,"time":1792684432231,"pid":8180,"hostname":"NauTcn","msg":"Notifikasi startup sukses dikirim ke DM owner."}
