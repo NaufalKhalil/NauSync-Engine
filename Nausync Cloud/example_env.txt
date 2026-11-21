@@ -1,10 +1,10 @@
 # Token Bot yang didapatkan dari Discord Developer Portal
 
-DISCORD_TOKEN=???
+DISCORD_TOKEN=xxxxxxxxxxxxxxxxxxxxxxx
 
 # ID Akun Discord Pribadi Anda
 
-DISCORD_OWNER_ID=???
+DISCORD_OWNER_ID=1184537085xxxxxxxxxxxx
 
 
 # Label pembeda laptop ini (dipakai di subject/isi email PIN & alert, serta

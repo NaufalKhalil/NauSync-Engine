@@ -1,0 +1,11 @@
+# Rahasia & state per-laptop — JANGAN PERNAH masuk repo
+.env
+*.env
+pin.store.json
+pin.force-reset.marker
+previewMessages.store.json
+bot-log*.txt
+
+# Lain-lain
+node_modules/
+src - Copy/

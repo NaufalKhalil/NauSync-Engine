@@ -1,5 +1,5 @@
 import { listDir, copyPath, movePath, deletePath, purgePath, resolveForRclone, streamArchiveToRemote } from './fsops.js';
-import { listRootNames, isConfidential, containsBlockedPath, safeResolve } from './pathGuard.js';
+import { listRootNames, isConfidential, containsConfidentialPath, containsBlockedPath, isBlocked, safeResolve } from './pathGuard.js';
 import { uploadToDrive, RCLONE_SPEED_FLAGS } from './rclone.js';
 import { toEmbedPayload, COLORS } from './embeds.js';
 import { config } from './config.js';
@@ -10,6 +10,7 @@ import { exec, spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
 import { verifyPin, changePin, verifyAndRotatePin, resendPendingSilentPinIfAny, sendAlertEmail } from './pinStore.js';
+import { startRemoteSession, stopRemoteSession, getRemoteStatus, REMOTE_DEFAULT_MINUTES, REMOTE_MAX_MINUTES } from './remote.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -21,6 +22,45 @@ const execFileAsync = promisify(execFile);
 // (RAM/CPU numpuk dari beberapa proses rclone/compress paralel) dan bikin
 // storage lokal + Google Drive penuh tak terkendali kalau di-spam.
 const PIN_SIZE_THRESHOLD = 50 * 1024 * 1024; // 50MB
+
+// --- Batas job transfer paralel (download / dz) ---
+// Gate PIN 50MB tidak mencegah spam banyak transfer 49MB sekaligus (tiap
+// transfer = 1 proses rclone, dz juga + proses kompres). Batasi jumlah job
+// yang boleh jalan bersamaan.
+const MAX_TRANSFER_JOBS = 2;
+let activeTransferJobs = 0;
+
+function tryAcquireTransferSlot() {
+  if (activeTransferJobs >= MAX_TRANSFER_JOBS) return false;
+  activeTransferJobs++;
+  return true;
+}
+
+function releaseTransferSlot() {
+  activeTransferJobs = Math.max(0, activeTransferJobs - 1);
+}
+
+function transferBusyMessage() {
+  return `⚠️ Masih ada ${activeTransferJobs} transfer (download/dz) yang berjalan — batas ${MAX_TRANSFER_JOBS} sekaligus. Tunggu salah satunya selesai dulu, lalu ulangi.`;
+}
+
+// True kalau path (fisik) ada DI DALAM folder rahasia ATAU MENGANDUNG folder
+// rahasia di dalamnya (mis. "D/Project" yang berisi "D/Project/Data Siswa").
+// Dipakai di semua gate PIN copy/move/download/dz/list — isConfidential()
+// saja tidak cukup karena folder induk lolos.
+function isSensitive(absPath) {
+  return isConfidential(absPath) || containsConfidentialPath(absPath);
+}
+
+// Cek tujuan copy/move SEBELUM PIN dipakai: kalau tujuan sudah ada, command
+// pasti gagal — jangan sampai PIN (sekali pakai) terbuang untuk itu.
+function assertDestinationFree(dstArg) {
+  const dstVirtual = resolvePathArg(dstArg);
+  const dstAbs = safeResolve(dstVirtual);
+  if (fs.existsSync(dstAbs)) {
+    throw new Error(`\`${toDisplayPath(dstVirtual)}\` sudah ada. Dibatalkan SEBELUM PIN dipakai supaya tidak menimpa data — hapus/rename dulu tujuannya kalau memang mau ditimpa.`);
+  }
+}
 
 // Dipakai di command berbahaya (shutdown/restart/purge/dll): ambil argumen
 // TERAKHIR sebagai PIN, verifikasi, dan return sisa argumen sebelumnya
@@ -45,7 +85,7 @@ async function requirePin(args, reason, opts = {}) {
 // commands.js terbaru atau masih versi lama (mis. abis edit tapi restart-nya
 // gagal reload / salah file yang ditimpa). Naikkan angkanya tiap kali bikin
 // perubahan besar ke command handling.
-export const BUILD_TAG = 'cmds-v22-download-blockedpath-fix';
+export const BUILD_TAG = 'cmds-v24-hardening';
 
 // --- FITUR: "current directory" per sesi bot, biar user tidak perlu ketik ---
 // path panjang berulang-ulang tiap mau list/copy/move/delete/download.
@@ -289,6 +329,9 @@ function buildHelpText() {
 • \`shutdown <pin>\` 🔐
 • \`restart <pin>\` 🔐
 • \`cancel\`
+• \`remote on [menit] <pin>\` 🔐
+• \`remote off\`
+• \`remote status\`
 
 **Keamanan**
 • \`chgpin <pin_lama>\` 🔐
@@ -565,6 +608,18 @@ const DETAILED_HELP = {
     '• Bedanya: laptop nyala lagi otomatis setelah Windows selesai booting\n' +
     '• Bot Nausync Cloud ikut aktif lagi otomatis (asalkan sudah di-setting auto-start lewat Task Scheduler)',
 
+  remote: '**remote** — sesi remote desktop on-demand (RustDesk), pengganti Quick Assist\n\n' +
+    '**Format:**\n' +
+    '• `remote on [menit] <pin>` — nyalakan sesi (default 30 menit, maks 120)\n' +
+    '• `remote off` — tutup sesi (tanpa PIN)\n' +
+    '• `remote status` — cek sesi aktif & sisa waktu\n\n' +
+    '**Cara kerja:**\n' +
+    '• Bot menyalakan service RustDesk & membuat password acak baru tiap sesi\n' +
+    '• ID + password dikirim ke EMAIL (tidak lewat Discord)\n' +
+    '• Sesi otomatis tutup saat waktu habis / `remote off`: password diganti acak & service dimatikan\n' +
+    '• Bot nyala/restart otomatis menutup sisa sesi lama\n\n' +
+    '⚠️ Kalau kamu dapat email \"Remote session AKTIF\" padahal tidak menjalankan `remote on`, segera `remote off` & amankan akun Discord-mu',
+
   chgpin: '**chgpin** — ganti PIN keamanan secara manual\n\n' +
     '**Format:** `chgpin <pin_lama>`\n\n' +
     '**Cara kerja:**\n' +
@@ -633,28 +688,76 @@ function tokenize(text) {
 // secara PARALEL sekaligus (Promise.all) alih-alih satu-satu berurutan —
 // jadi selain tidak nge-block, totalnya juga selesai lebih cepat untuk
 // folder yang isinya banyak subfolder/file.
+// --- PERBAIKAN getLocalSize ---
+// - Pakai lstat & LEWATI symlink/junction: stat mengikuti link, jadi bisa
+//   loop tak berujung (junction yang menunjuk ke induknya) atau ikut
+//   menghitung folder di luar sandbox.
+// - Entry yang masuk BLOCKED_PATHS dilewati (ukurannya tidak ikut dihitung).
+// - Concurrency dibatasi (SIZE_SCAN_CONCURRENCY operasi fs sekaligus):
+//   Promise.all tanpa batas di pohon besar (root "D") bisa menghabiskan file
+//   handle (EMFILE) / membuat bot hang.
+// - Ada batas waktu total. Kalau terlewati, dilempar Error (fail-closed:
+//   command tidak jalan, bukan lolos dengan ukuran yang salah).
+const SIZE_SCAN_CONCURRENCY = 32;
+const SIZE_SCAN_TIMEOUT_MS = 3 * 60 * 1000;
+let sizeScanActive = 0;
+const sizeScanQueue = [];
+
+function withSizeSlot(fn) {
+  return new Promise((resolve, reject) => {
+    const run = async () => {
+      sizeScanActive++;
+      try {
+        resolve(await fn());
+      } catch (err) {
+        reject(err);
+      } finally {
+        sizeScanActive--;
+        const next = sizeScanQueue.shift();
+        if (next) next();
+      }
+    };
+    if (sizeScanActive < SIZE_SCAN_CONCURRENCY) run();
+    else sizeScanQueue.push(run);
+  });
+}
+
 async function getLocalSize(targetPath) {
-  let stats;
-  try {
-    stats = await fs.promises.stat(targetPath);
-  } catch {
-    return 0;
+  const deadline = Date.now() + SIZE_SCAN_TIMEOUT_MS;
+
+  async function walk(p) {
+    if (Date.now() > deadline) {
+      throw new Error(`Menghitung ukuran terlalu lama (>${SIZE_SCAN_TIMEOUT_MS / 60000} menit) — folder terlalu besar. Pilih subfolder yang lebih kecil.`);
+    }
+
+    let stats;
+    try {
+      stats = await withSizeSlot(() => fs.promises.lstat(p));
+    } catch {
+      return 0;
+    }
+
+    if (stats.isSymbolicLink()) return 0; // symlink/junction: jangan diikuti
+    if (stats.isFile()) return stats.size;
+    if (!stats.isDirectory()) return 0;
+
+    let entries;
+    try {
+      entries = await withSizeSlot(() => fs.promises.readdir(p, { withFileTypes: true }));
+    } catch {
+      return 0;
+    }
+
+    const sizes = await Promise.all(
+      entries
+        .map((entry) => path.join(p, entry.name))
+        .filter((childPath) => !isBlocked(childPath))
+        .map((childPath) => walk(childPath))
+    );
+    return sizes.reduce((sum, n) => sum + n, 0);
   }
 
-  if (stats.isFile()) return stats.size;
-  if (!stats.isDirectory()) return 0;
-
-  let entries;
-  try {
-    entries = await fs.promises.readdir(targetPath, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
-
-  const sizes = await Promise.all(
-    entries.map((entry) => getLocalSize(path.join(targetPath, entry.name)))
-  );
-  return sizes.reduce((sum, s) => sum + s, 0);
+  return walk(targetPath);
 }
 
 // --- UPGRADE KECEPATAN: cache sisa kapasitas Google Drive ---
@@ -677,11 +780,14 @@ function getDriveFreeSpace() {
   }
 
   return new Promise((resolve) => {
-    exec(`rclone about "${config.rcloneRemote}:" --json`, (err, stdout) => {
+    execFile('rclone', ['about', `${config.rcloneRemote}:`, '--json'], { timeout: 30000 }, (err, stdout) => {
       if (err) return resolve(Infinity);
       try {
         const data = JSON.parse(stdout.toString());
-        const free = data.free || 0;
+        // rclone tidak selalu melapor "free" (mis. akun unlimited). Kalau
+        // tidak ada, anggap tak terbatas — JANGAN 0 (itu bikin SEMUA
+        // download ditolak "melebihi kapasitas").
+        const free = typeof data.free === 'number' ? data.free : Infinity;
         driveFreeSpaceCache = { value: free, fetchedAt: Date.now() };
         resolve(free);
       } catch { resolve(Infinity); }
@@ -969,7 +1075,7 @@ function formatBytes(bytes) {
   if (bytes === Infinity || bytes === 0) return '0 Bytes';
   const k = 1024;
   const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const i = Math.min(Math.max(Math.floor(Math.log(bytes) / Math.log(k)), 0), sizes.length - 1);
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
@@ -1322,9 +1428,32 @@ async function runBatchCopyOrMove(action, srcVirtuals, restArgs, dscMessage) {
       srcVirtual,
       absSrc,
       size,
-      needsConfidentialPin: isConfidential(absSrc),
+      needsConfidentialPin: isSensitive(absSrc),
       needsSizePin: size >= PIN_SIZE_THRESHOLD,
     });
+  }
+
+  // Preflight tujuan SEBELUM PIN dipakai: tabrakan nama (sudah ada di tujuan,
+  // atau dua item batch bernama sama) pasti membuat item itu gagal, jadi
+  // batalkan seluruh batch di sini daripada membuang PIN sekali-pakai.
+  {
+    const seenNames = new Set();
+    const conflicts = [];
+    for (const item of items) {
+      const baseName = path.posix.basename(item.srcVirtual);
+      const itemDstVirtual = `${dstFolderVirtual === '.' ? '' : dstFolderVirtual + '/'}${baseName}`;
+      let exists;
+      try {
+        exists = fs.existsSync(safeResolve(itemDstVirtual));
+      } catch (err) {
+        return `❌ Gagal: ${err.message}`;
+      }
+      if (exists || seenNames.has(baseName.toLowerCase())) conflicts.push(itemDstVirtual);
+      seenNames.add(baseName.toLowerCase());
+    }
+    if (conflicts.length > 0) {
+      return `❌ **Batch dibatalkan sebelum PIN dipakai** — ${conflicts.length} tujuan sudah ada / namanya bentrok:\n${formatBatchItemList(conflicts)}\nHapus/rename dulu tujuannya, atau pilih folder tujuan lain.`;
+    }
   }
 
   const pinItems = items.filter((it) => it.needsConfidentialPin || it.needsSizePin);
@@ -1390,7 +1519,11 @@ async function runBatchDelete(targetVirtuals, restArgs) {
     if (!fs.existsSync(absTarget)) {
       return `❌ Gagal: \`${toDisplayPath(targetVirtual)}\` tidak ditemukan. Batch dibatalkan, tidak ada yang diproses.`;
     }
-    items.push({ targetVirtual, absTarget, needsConfidentialPin: isConfidential(absTarget) });
+    const insideConfidential = isConfidential(absTarget);
+    if (!insideConfidential && containsConfidentialPath(absTarget)) {
+      return `❌ Gagal: \`${toDisplayPath(targetVirtual)}\` mengandung folder RAHASIA di dalamnya, tidak bisa dihapus sekaligus. Hapus isinya per-item (lewati folder rahasia). Batch dibatalkan, tidak ada yang diproses.`;
+    }
+    items.push({ targetVirtual, absTarget, needsConfidentialPin: insideConfidential });
   }
 
   const confidentialItems = items.filter((it) => it.needsConfidentialPin);
@@ -1693,7 +1826,7 @@ async function runList(targetDir, dscMessage) {
   function entryNeedsPin(bareName) {
     try {
       const virtualPath = targetDir === '.' ? bareName : `${targetDir}/${bareName}`;
-      return isConfidential(safeResolve(virtualPath));
+      return isSensitive(safeResolve(virtualPath));
     } catch {
       // Harusnya tidak pernah terjadi (entry ini datang dari listDir
       // folder yang sama), tapi kalau gagal resolve karena sebab apa
@@ -1952,9 +2085,10 @@ export async function handleCommand(rawText, dscMessage = null) {
         if (!fs.existsSync(absSrc)) return `❌ Gagal: \`${toDisplayPath(srcVirtual)}\` tidak ditemukan.`;
 
         const srcSize = await getLocalSize(absSrc);
-        const needsConfidentialPin = isConfidential(absSrc);
+        const needsConfidentialPin = isSensitive(absSrc);
         const needsSizePin = srcSize >= PIN_SIZE_THRESHOLD;
         let dstArgRaw = args[1];
+        assertDestinationFree(args[1]); // gagal di sini = PIN belum terpakai
 
         if (needsConfidentialPin || needsSizePin) {
           if (args.length < 3) {
@@ -1995,9 +2129,10 @@ export async function handleCommand(rawText, dscMessage = null) {
         if (!fs.existsSync(absSrc)) return `❌ Gagal: \`${toDisplayPath(srcVirtual)}\` tidak ditemukan.`;
 
         const srcSize = await getLocalSize(absSrc);
-        const needsConfidentialPin = isConfidential(absSrc);
+        const needsConfidentialPin = isSensitive(absSrc);
         const needsSizePin = srcSize >= PIN_SIZE_THRESHOLD;
         let dstArgRaw = args[1];
+        assertDestinationFree(args[1]); // gagal di sini = PIN belum terpakai
 
         // Sama alasannya kayak copy: "move" bisa dipakai buat mengeluarkan
         // file/folder RAHASIA dari folder confidential ke lokasi bebas
@@ -2057,6 +2192,10 @@ export async function handleCommand(rawText, dscMessage = null) {
         }
         if (!fs.existsSync(absTarget)) {
           return `❌ Gagal: \`${toDisplayPath(targetVirtual)}\` tidak ditemukan.`;
+        }
+
+        if (!isConfidential(absTarget) && containsConfidentialPath(absTarget)) {
+          return `❌ \`${toDisplayPath(targetVirtual)}\` mengandung folder RAHASIA di dalamnya, tidak bisa dihapus sekaligus (isinya akan pindah ke trash yang tidak rahasia). Hapus isinya per-item, lewati folder rahasia.`;
         }
 
         const needsConfidentialPin = isConfidential(absTarget);
@@ -2584,6 +2723,39 @@ export async function handleCommand(rawText, dscMessage = null) {
         return '🛑 **Dibatalkan!** Shutdown/restart yang tadi pending sudah dihentikan, laptop tetap menyala.';
       }
 
+      case 'remote': {
+        const sub = (args[0] || '').toLowerCase();
+
+        if (sub === 'status') {
+          const st = getRemoteStatus();
+          return st.active
+            ? `🟢 Sesi remote **aktif**, sisa ${Math.ceil(st.remainingMs / 60000)} menit.`
+            : '⚪ Tidak ada sesi remote aktif.';
+        }
+
+        // Sengaja tanpa PIN (sama alasan seperti "cancel"): menutup akses
+        // itu aksi yang MENGURANGI risiko.
+        if (sub === 'off') {
+          const r = await stopRemoteSession('remote off dari Discord');
+          return (r.hadSession || r.wasRunning)
+            ? '🛑 **Sesi remote ditutup.** Password diganti acak & service RustDesk dihentikan.'
+            : '⚪ Tidak ada sesi remote yang aktif.';
+        }
+
+        if (sub === 'on') {
+          const rest = await requirePin(args.slice(1), 'remote on');
+          const minutes = rest[0] ? parseInt(rest[0], 10) : REMOTE_DEFAULT_MINUTES;
+          if (!Number.isFinite(minutes) || minutes < 1 || minutes > REMOTE_MAX_MINUTES) {
+            return `❌ Durasi harus 1–${REMOTE_MAX_MINUTES} menit.`;
+          }
+          const { id } = await startRemoteSession(minutes);
+          showDesktopMessage(`Sesi remote diaktifkan (${minutes} menit).`, 10).catch(() => {});
+          return `🖥️ **Sesi remote aktif ${minutes} menit.**\n• ID: \`${id}\`\n• Password dikirim ke **email** (tidak lewat Discord).\n_(Tutup kapan saja dengan \`remote off\`.)_`;
+        }
+
+        return 'Format: `remote on [menit] <pin>` | `remote off` | `remote status`';
+      }
+
       case 'chgpin': {
         if (args.length < 1) return 'Format: `chgpin <pin_lama>`';
         try {
@@ -2595,6 +2767,7 @@ export async function handleCommand(rawText, dscMessage = null) {
       }
 
       case 'download': {
+        if (activeTransferJobs >= MAX_TRANSFER_JOBS) return transferBusyMessage(); // cek dini, sebelum PIN dipakai
         if (args.length < 1) return 'Format: `download <path>` (kalau file/folder rahasia dan/atau ukuran ≥50MB, tambahkan PIN: `download <path> <pin>`)';
         
         const targetPath = resolvePathArg(args[0]);
@@ -2614,7 +2787,7 @@ export async function handleCommand(rawText, dscMessage = null) {
         }
 
         const localSize = await getLocalSize(absPath);
-        const needsConfidentialPin = isConfidential(absPath);
+        const needsConfidentialPin = isSensitive(absPath);
         const needsSizePin = localSize >= PIN_SIZE_THRESHOLD;
 
         if (needsConfidentialPin || needsSizePin) {
@@ -2649,49 +2822,81 @@ export async function handleCommand(rawText, dscMessage = null) {
         const isDir = stats.isDirectory();
         const entityName = targetPath.replace(/\\/g, '/').split('/').pop() || 'download';
         
+        if (!tryAcquireTransferSlot()) return transferBusyMessage();
+
+        let slotReleased = false;
+        const releaseSlot = () => {
+          if (!slotReleased) {
+            slotReleased = true;
+            releaseTransferSlot();
+          }
+        };
+
         let progressMessage = null;
-        if (dscMessage) {
-          progressMessage = await dscMessage.reply(toEmbedPayload(`⏳ **Mempersiapkan rclone...** Menghitung data **${formatBytes(localSize)}**`));
+        try {
+          if (dscMessage) {
+            progressMessage = await dscMessage.reply(toEmbedPayload(`⏳ **Mempersiapkan rclone...** Menghitung data **${formatBytes(localSize)}**`));
+          }
+        } catch (err) {
+          releaseSlot();
+          throw err;
         }
 
         return new Promise((resolve) => {
-          let rcloneCmd = 'copy';
-          let remoteTarget = `${config.rcloneRemote}:${config.rcloneStagingFolder}/${entityName}`;
-          
-          if (!isDir) {
-            rcloneCmd = 'copyto';
-            remoteTarget = `${config.rcloneRemote}:${config.rcloneStagingFolder}/${entityName}`;
-          }
+          const rcloneCmd = isDir ? 'copy' : 'copyto';
+          const remoteTarget = `${config.rcloneRemote}:${config.rcloneStagingFolder}/${entityName}`;
 
-          const process = spawn('rclone', [rcloneCmd, absPath, remoteTarget, '--progress', '--stats', '3s', ...RCLONE_SPEED_FLAGS]);
-          
+          // Variabel bernama "proc" (bukan "process") supaya tidak menimpa
+          // global `process` milik Node di dalam scope ini.
+          const proc = spawn('rclone', [rcloneCmd, absPath, remoteTarget, '--progress', '--stats', '3s', ...RCLONE_SPEED_FLAGS]);
+
           let lastUpdate = 0;
+          let finished = false;
 
-          process.stdout.on('data', async (data) => {
-            const output = data.toString();
-            const match = output.match(/(\d+)%\s*,/);
+          // Satu-satunya jalur penyelesaian: dipanggil dari 'close' ATAU
+          // 'error' (mis. rclone tidak ditemukan di PATH -> 'error' saja,
+          // 'close' tidak pernah datang dan promise sebelumnya menggantung).
+          const finish = async (ok, failDetail) => {
+            if (finished) return;
+            finished = true;
+            releaseSlot();
+
+            const text = ok
+              ? `✅ **Upload Sukses 100%!**\n• Target: "${entityName}"\n• Ukuran: **${formatBytes(localSize)}**\nSilakan cek Google Drive di HP Anda.`
+              : `❌ **Proses Gagal!** ${failDetail}`;
+
+            if (progressMessage) {
+              await progressMessage.edit(toEmbedPayload(text)).catch(() => {});
+              resolve(null); // hasil sudah ditampilkan di pesan progress
+            } else {
+              resolve(text);
+            }
+          };
+
+          const handleProgress = (data) => {
+            const match = data.toString().match(/(\d+)%\s*,/);
             if (match && progressMessage) {
-              const currentProgress = match[1] + "%";
               const now = Date.now();
               if (now - lastUpdate > 4000) {
                 lastUpdate = now;
-                await progressMessage.edit(toEmbedPayload(`📦 **Sedang Upload:** \`${currentProgress}\` Selesai\n• Target: "${entityName}" (${formatBytes(localSize)})`)).catch(() => {});
+                progressMessage
+                  .edit(toEmbedPayload(`📦 **Sedang Upload:** \`${match[1]}%\` Selesai\n• Target: "${entityName}" (${formatBytes(localSize)})`))
+                  .catch(() => {});
               }
             }
-          });
+          };
 
-          process.on('close', async (code) => {
-            if (code === 0) {
-              if (progressMessage) {
-                await progressMessage.edit(toEmbedPayload(`✅ **Upload Sukses 100%!**\n• Target: "${entityName}"\n• Ukuran: **${formatBytes(localSize)}**\nSilakan cek Google Drive di HP Anda.`)).catch(() => {});
-              }
-              resolve(`Proses transfer selesai.`);
-            } else {
-              if (progressMessage) {
-                await progressMessage.edit(toEmbedPayload(`❌ **Proses Gagal!** Terjadi kesalahan saat rclone melakukan transfer data.`)).catch(() => {});
-              }
-              resolve(`Proses transfer dihentikan dengan error code ${code}`);
-            }
+          proc.stdout.on('data', handleProgress);
+          // stderr tetap dikonsumsi (kalau tidak, buffer pipe bisa penuh &
+          // rclone macet) dan ikut dipakai buat progress.
+          proc.stderr.on('data', handleProgress);
+
+          proc.on('error', (err) => {
+            finish(false, `rclone tidak bisa dijalankan (${err.message}). Pastikan rclone terinstall & ada di PATH proses bot.`);
+          });
+          proc.on('close', (code) => {
+            if (code === 0) finish(true);
+            else finish(false, `rclone keluar dengan error code ${code}. Terjadi kesalahan saat transfer data.`);
           });
         });
       }
@@ -2703,6 +2908,7 @@ export async function handleCommand(rawText, dscMessage = null) {
       case 'dz':
       case 'downloadzip':
       case 'dlzip': {
+        if (activeTransferJobs >= MAX_TRANSFER_JOBS) return transferBusyMessage(); // cek dini, sebelum PIN dipakai
         if (args.length < 1) return `Format: \`${command} <path>\` (kalau file/folder rahasia dan/atau ukuran ASLI ≥50MB, tambahkan PIN: \`${command} <path> <pin>\`)`;
         if (!dscMessage) return `Fitur ${command} cuma bisa dipakai lewat Discord.`;
 
@@ -2718,7 +2924,7 @@ export async function handleCommand(rawText, dscMessage = null) {
         }
 
         const localSize = await getLocalSize(absSrc);
-        const needsConfidentialPin = isConfidential(absSrc);
+        const needsConfidentialPin = isSensitive(absSrc);
         const needsSizePin = localSize >= PIN_SIZE_THRESHOLD;
 
         if (needsConfidentialPin || needsSizePin) {
@@ -2761,42 +2967,39 @@ export async function handleCommand(rawText, dscMessage = null) {
         // compress & upload jalan dalam SATU alur stream, tanpa nulis file
         // .zip ke disk lokal sama sekali. Lebih cepat & tidak butuh ruang
         // disk ekstra dibanding compress-ke-file-dulu-baru-upload.
-        const progressMessage = await dscMessage.reply(toEmbedPayload(`🗜️📤 **Zip & Upload...** \`${entityName}\` (${formatBytes(localSize)}) — langsung dikompres sambil diupload, tanpa nyimpen .zip lokal.`));
+        if (!tryAcquireTransferSlot()) return transferBusyMessage();
 
-        let result;
         try {
-          // PERBAIKAN: dulu progress dihitung dari pembacaan file sumber
-          // (fase compress) — itu selesai CEPAT (dibatasi disk lokal),
-          // jadi progress langsung lompat ke "100%" padahal upload ke
-          // Google Drive (dibatasi kecepatan internet, jauh lebih lambat)
-          // masih jalan lama setelahnya. Sekarang streamArchiveToRemote()
-          // (fsops.js) melapor `compressedBytes` — byte yang BENAR-BENAR
-          // sudah mengalir ke proses rclone — secara berkala SELAMA
-          // SELURUH proses (bukan cuma pas baca disk). Karena ukuran zip
-          // final belum diketahui sampai proses ini selesai (streaming,
-          // bukan file jadi), yang ditampilkan sengaja JUMLAH BYTE
-          // TERKIRIM (naik terus), BUKAN persentase — daripada nampilin
-          // angka yang keliatan "selesai" padahal belum.
-          result = await streamArchiveToRemote(absSrc, remoteTarget, ({ compressedBytes }) => {
-            progressMessage.edit(toEmbedPayload(
-              `🗜️📤 **Zip & Upload:** ${formatBytes(compressedBytes)} terkirim — \`${entityName}\`\n_(dikompres sambil diupload, ukuran akhir belum pasti sampai selesai)_`
-            )).catch(() => {});
-          });
-        } catch (err) {
-          await progressMessage.edit(toEmbedPayload(`❌ **Zip/upload gagal:** ${err.message}`)).catch(() => {});
-          return `Proses zip/upload gagal: ${err.message}`;
-        }
+          const progressMessage = await dscMessage.reply(toEmbedPayload(`🗜️📤 **Zip & Upload...** \`${entityName}\` (${formatBytes(localSize)}) — langsung dikompres sambil diupload, tanpa nyimpen .zip lokal.`));
 
-        await progressMessage.edit(toEmbedPayload(
-          `✅ **Zip & Upload Sukses!**\n• Sumber: \`${toDisplayPath(srcVirtual)}\` (${formatBytes(localSize)})\n• Zip: \`${zipName}\` (${formatBytes(result.compressedBytes)})\n• Streaming langsung — tidak ada file .zip lokal yang tersisa sama sekali.`
-        )).catch(() => {});
-        return 'Proses transfer selesai.';
+          let result;
+          try {
+            // Progress = jumlah byte yang BENAR-BENAR sudah mengalir ke rclone
+            // (bukan pembacaan disk), lihat streamArchiveToRemote() di fsops.js.
+            result = await streamArchiveToRemote(absSrc, remoteTarget, ({ compressedBytes }) => {
+              progressMessage.edit(toEmbedPayload(
+                `🗜️📤 **Zip & Upload:** ${formatBytes(compressedBytes)} terkirim — \`${entityName}\`\n_(dikompres sambil diupload, ukuran akhir belum pasti sampai selesai)_`
+              )).catch(() => {});
+            });
+          } catch (err) {
+            await progressMessage.edit(toEmbedPayload(`❌ **Zip/upload gagal:** ${err.message}`)).catch(() => {});
+            return null; // hasil sudah ditampilkan di pesan progress
+          }
+
+          await progressMessage.edit(toEmbedPayload(
+            `✅ **Zip & Upload Sukses!**\n• Sumber: \`${toDisplayPath(srcVirtual)}\` (${formatBytes(localSize)})\n• Zip: \`${zipName}\` (${formatBytes(result.compressedBytes)})\n• Streaming langsung — tidak ada file .zip lokal yang tersisa sama sekali.`
+          )).catch(() => {});
+          return null;
+        } finally {
+          releaseTransferSlot();
+        }
       }
 
       default:
         return `Command tidak dikenali: "${command}". Ketik "help" untuk daftar command.`;
     }
   } catch (err) {
-    return `Gagal: ${err.message}`;
+    const cleanMsg = String(err.message).replace(/^(?:❌|🔒|⚠️)\s*/u, '');
+    return `❌ Gagal: ${cleanMsg}`;
   }
 }

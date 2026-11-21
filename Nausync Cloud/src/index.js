@@ -6,8 +6,29 @@ import { initPin, startPinExpiryWatcher, sendAlertEmail } from './pinStore.js';
 import { purgeExpiredTrash } from './fsops.js';
 import { config } from './config.js';
 import { toEmbedPayload } from './embeds.js';
+import { cleanupRemoteOnStartup } from './remote.js';
 
 const logger = pino({ level: 'info' });
+
+// --- Jaring pengaman: error nyasar (mis. DNS/ECONNRESET saat internet putus
+// dari request REST atau rclone) JANGAN sampai membunuh proses bot. ---
+process.on('unhandledRejection', (err) => logger.error(err, 'unhandledRejection'));
+process.on('uncaughtException', (err) => logger.error(err, 'uncaughtException'));
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// --- Mask PIN di log ---
+// PIN diketik langsung di command Discord (mis. "shutdown Ab3xQ9kZ") dan
+// sebelumnya tercatat apa adanya di bot-log.txt. Token yang bentuknya persis
+// PIN (8 karakter, charset PIN, mengandung huruf besar+kecil+angka) diganti
+// "***" sebelum dicatat. Command-nya sendiri tetap utuh dikirim ke handler.
+const PIN_LIKE = /^(?=.*[A-HJ-NP-Z])(?=.*[a-hjkm-np-z])(?=.*[2-9])[A-HJ-NP-Za-hjkm-np-z2-9]{8}$/;
+function maskPins(text) {
+  return String(text)
+    .split(/(\s+)/)
+    .map((tok) => (PIN_LIKE.test(tok) ? '***' : tok))
+    .join('');
+}
 
 // --- Sweep harian auto-purge trash (lihat purgeExpiredTrash di fsops.js) ---
 // Item di ".trash" yang sudah lebih tua dari config.trashRetentionDays
@@ -37,8 +58,34 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
+// --- Watchdog koneksi ---
+// Kalau bot pernah ready tapi lalu tidak ready lebih dari
+// WATCHDOG_MAX_DOWN_MS (auto-reconnect discord.js macet), proses di-exit
+// supaya di-start ulang oleh Task Scheduler (trigger berulang).
+let hasBeenReady = false;
+let notReadySince = null;
+const WATCHDOG_MAX_DOWN_MS = 10 * 60 * 1000;
+
+client.on('shardDisconnect', () => logger.warn('Discord: koneksi terputus.'));
+client.on('shardReconnecting', () => logger.warn('Discord: mencoba reconnect...'));
+client.on('shardResume', () => logger.info('Discord: koneksi pulih.'));
+
+setInterval(() => {
+  if (!hasBeenReady) return; // fase login ditangani loginWithRetry
+  if (client.isReady()) {
+    notReadySince = null;
+    return;
+  }
+  notReadySince ??= Date.now();
+  if (Date.now() - notReadySince > WATCHDOG_MAX_DOWN_MS) {
+    logger.error('Watchdog: tidak ready >10 menit, exit agar di-restart.');
+    process.exit(1);
+  }
+}, 60 * 1000);
+
 // Fungsi untuk menyalakan fitur utama setelah berhasil login ke Discord
 client.once('ready', async () => {
+  hasBeenReady = true;
   logger.info(`Bot Nausync Cloud [${config.laptopLabel}] sukses terhubung ke Discord sebagai: ${client.user.tag}`);
   logger.info(`Kode command yang aktif: ${BUILD_TAG}`);
   
@@ -50,14 +97,28 @@ client.once('ready', async () => {
     logger.warn('rclone belum siap / remote belum dikonfigurasi.');
   }
 
+  // Pastikan tidak ada sesi remote (RustDesk) yang tersisa dari sebelum
+  // crash/reboot — lihat remote.js.
+  try {
+    await cleanupRemoteOnStartup();
+  } catch (err) {
+    logger.warn(`Cleanup sesi remote gagal: ${err.message}`);
+  }
+
   // Generate PIN keamanan BARU & kirim ke email SETIAP KALI bot nyala
   // (start pertama kali maupun restart) — lihat initPin() di pinStore.js.
   // Command berbahaya (shutdown/restart/purge) butuh PIN ini, independen
   // dari Discord, supaya tetap aman walau akun Discord kena hack.
   try {
-    await initPin();
+    const pinStatus = await initPin();
     startPinExpiryWatcher();
-    logger.info(`PIN keamanan baru [${config.laptopLabel}] sudah dikirim ke email.`);
+    if (pinStatus?.skipped) {
+      logger.info(`PIN keamanan [${config.laptopLabel}] dipertahankan (start ulang cepat, email PIN tidak dikirim lagi).`);
+    } else if (pinStatus?.sent) {
+      logger.info(`PIN keamanan baru [${config.laptopLabel}] sudah dikirim ke email.`);
+    } else {
+      logger.warn(`PIN keamanan baru [${config.laptopLabel}] dibuat tapi email GAGAL terkirim — cek log untuk PIN fallback.`);
+    }
   } catch (err) {
     logger.error(err, 'Gagal inisialisasi PIN keamanan.');
   }
@@ -68,21 +129,16 @@ client.once('ready', async () => {
   runTrashRetentionSweep();
   setInterval(runTrashRetentionSweep, TRASH_SWEEP_INTERVAL_MS);
 
-  // --- FITUR BARU: AUTO-BERSIHKAN RIWAYAT CHAT BOT DARI SESI SEBELUMNYA ---
+  // --- AUTO-BERSIHKAN RIWAYAT CHAT BOT DARI SESI SEBELUMNYA ---
   // Setiap kali bot baru nyala/restart, sapu bersih semua balasan BOT
   // (bukan pesan owner — lihat batasan Discord API di komentar
   // clearBotMessagesInChannel() di commands.js) yang masih ketinggalan di
-  // DM dari sesi-sesi sebelumnya, supaya histori chat selalu "fresh" tiap
-  // kali laptop/bot baru dinyalakan lagi. Dijalankan SEBELUM notifikasi
-  // "Bot Aktif" di bawah, supaya notifikasi yang baru itu sendiri tidak
-  // ikut kesapu sama proses ini.
+  // DM dari sesi-sesi sebelumnya. Dijalankan SEBELUM notifikasi "Bot Aktif"
+  // di bawah, supaya notifikasi yang baru itu sendiri tidak ikut kesapu.
   //
   // Sengaja TIDAK butuh PIN (beda dari command manual "clearchat") karena
-  // ini bukan aksi yang diminta owner lewat Discord — ini housekeeping
-  // otomatis milik bot sendiri, dan cuma menyentuh pesan BOT sendiri (tidak
-  // pernah pesan owner), jadi risikonya sama seperti bot mengedit/menghapus
-  // balasannya sendiri di command lain. Bisa dimatikan lewat
-  // AUTO_CLEAR_CHAT_ON_START=false di .env kalau tidak diinginkan.
+  // ini housekeeping otomatis milik bot sendiri, dan cuma menyentuh pesan
+  // BOT sendiri. Bisa dimatikan lewat AUTO_CLEAR_CHAT_ON_START=false di .env.
   let ownerDmChannel = null;
   try {
     const ownerId = process.env.DISCORD_OWNER_ID;
@@ -105,10 +161,9 @@ client.once('ready', async () => {
   }
   // -------------------------------------------------------------------
 
-  // --- FITUR BARU: KIRIM PESAN NOTIFIKASI STARTUP LANGSUNG KE DM OWNER ---
+  // --- KIRIM PESAN NOTIFIKASI STARTUP LANGSUNG KE DM OWNER ---
   try {
     if (ownerDmChannel) {
-      // Kirim pesan salam pembuka ke DM pribadi Anda
       await ownerDmChannel.send(toEmbedPayload(`✅ **Bot Nausync Cloud [${config.laptopLabel}] Telah Aktif!**\nLaptop Anda di rumah baru saja dinyalakan/login dan sistem background sudah *stand-by* menerima perintah Anda.`));
       logger.info('Notifikasi startup sukses dikirim ke DM owner.');
     }
@@ -125,25 +180,28 @@ client.on('messageCreate', async (message) => {
   const text = message.content.trim();
   if (!text) return;
 
-  logger.info(`Command diterima dari owner via Discord: ${text}`);
+  const loggedText = maskPins(text);
+  logger.info(`Command diterima dari owner via Discord: ${loggedText}`);
 
   try {
     // Teruskan objek message ke fungsi commands agar pesan bisa diedit otomatis
     const reply = await handleCommand(text, message);
 
-    // Kirim pesan teks akhir jika ada log info tambahan
-    if (reply && !reply.includes("Proses transfer selesai")) {
-      await message.reply(toEmbedPayload(reply));
+    // Kirim balasan kalau command mengembalikan string. null = command sudah
+    // mengirim/mengedit balasannya sendiri (list pagination, progress, dll).
+    const payload = reply ? toEmbedPayload(reply) : null;
+    if (payload) {
+      await message.reply(payload);
     }
 
     // Catat balasan bot ke log juga (dipotong biar log tidak kebanjiran),
     // supaya kalau ada masalah bisa dicek dari log server tanpa perlu
     // screenshot Discord tiap kali.
     const replyPreview = reply ? reply.slice(0, 300).replace(/\n/g, ' ') : '(null / sudah dikirim manual)';
-    logger.info(`Balasan bot untuk "${text}": ${replyPreview}`);
+    logger.info(`Balasan bot untuk "${loggedText}": ${replyPreview}`);
   } catch (err) {
-    logger.error(err, `Gagal memproses command "${text}"`);
-    await message.reply(toEmbedPayload('❌ Terjadi kesalahan internal saat menjalankan perintah.'));
+    logger.error(err, `Gagal memproses command "${loggedText}"`);
+    await message.reply(toEmbedPayload('❌ Terjadi kesalahan internal saat menjalankan perintah.')).catch(() => {});
   }
 });
 
@@ -151,7 +209,28 @@ client.on('error', (err) => {
   logger.error(err, 'Terjadi error pada koneksi Discord');
 });
 
-client.login(process.env.DISCORD_TOKEN).catch((err) => {
-  logger.error(err, 'Gagal login ke Discord.');
-  process.exit(1);
-});
+// --- Login dengan retry tanpa batas ---
+// Kalau internet belum ada saat boot (atau baru nyala berjam-jam kemudian),
+// bot TIDAK exit — dia terus mencoba sampai berhasil. Hanya error konfigurasi
+// (token salah / intents tidak diizinkan) yang menghentikan proses, karena
+// retry tidak akan membantu di kasus itu.
+async function loginWithRetry() {
+  let attempt = 0;
+  while (true) {
+    try {
+      await client.login(process.env.DISCORD_TOKEN);
+      return;
+    } catch (err) {
+      if (err.code === 'TokenInvalid' || err.code === 'DisallowedIntents') {
+        logger.error(err, 'Token/intents salah, berhenti.');
+        process.exit(1);
+      }
+      attempt++;
+      const delay = Math.min(5000 * attempt, 60000); // 5s, 10s, ... maks 60s
+      logger.warn(`Login gagal (${err.code || err.message}). Coba lagi ${delay / 1000}s (percobaan ke-${attempt}).`);
+      await sleep(delay);
+    }
+  }
+}
+
+loginWithRetry();

@@ -10,6 +10,7 @@ import { exec, spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
 import { verifyPin, changePin, verifyAndRotatePin, resendPendingSilentPinIfAny, sendAlertEmail } from './pinStore.js';
+import { startRemoteSession, stopRemoteSession, getRemoteStatus, REMOTE_DEFAULT_MINUTES, REMOTE_MAX_MINUTES } from './remote.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -45,7 +46,7 @@ async function requirePin(args, reason, opts = {}) {
 // commands.js terbaru atau masih versi lama (mis. abis edit tapi restart-nya
 // gagal reload / salah file yang ditimpa). Naikkan angkanya tiap kali bikin
 // perubahan besar ke command handling.
-export const BUILD_TAG = 'cmds-v21-embed-ui';
+export const BUILD_TAG = 'cmds-v23-remote-session';
 
 // --- FITUR: "current directory" per sesi bot, biar user tidak perlu ketik ---
 // path panjang berulang-ulang tiap mau list/copy/move/delete/download.
@@ -289,6 +290,9 @@ function buildHelpText() {
 • \`shutdown <pin>\` 🔐
 • \`restart <pin>\` 🔐
 • \`cancel\`
+• \`remote on [menit] <pin>\` 🔐
+• \`remote off\`
+• \`remote status\`
 
 **Keamanan**
 • \`chgpin <pin_lama>\` 🔐
@@ -564,6 +568,18 @@ const DETAILED_HELP = {
     '• Sama kayak `shutdown` (15 detik delay, wajib PIN)\n' +
     '• Bedanya: laptop nyala lagi otomatis setelah Windows selesai booting\n' +
     '• Bot Nausync Cloud ikut aktif lagi otomatis (asalkan sudah di-setting auto-start lewat Task Scheduler)',
+
+  remote: '**remote** — sesi remote desktop on-demand (RustDesk), pengganti Quick Assist\n\n' +
+    '**Format:**\n' +
+    '• `remote on [menit] <pin>` — nyalakan sesi (default 30 menit, maks 120)\n' +
+    '• `remote off` — tutup sesi (tanpa PIN)\n' +
+    '• `remote status` — cek sesi aktif & sisa waktu\n\n' +
+    '**Cara kerja:**\n' +
+    '• Bot menyalakan service RustDesk & membuat password acak baru tiap sesi\n' +
+    '• ID + password dikirim ke EMAIL (tidak lewat Discord)\n' +
+    '• Sesi otomatis tutup saat waktu habis / `remote off`: password diganti acak & service dimatikan\n' +
+    '• Bot nyala/restart otomatis menutup sisa sesi lama\n\n' +
+    '⚠️ Kalau kamu dapat email \"Remote session AKTIF\" padahal tidak menjalankan `remote on`, segera `remote off` & amankan akun Discord-mu',
 
   chgpin: '**chgpin** — ganti PIN keamanan secara manual\n\n' +
     '**Format:** `chgpin <pin_lama>`\n\n' +
@@ -2584,6 +2600,39 @@ export async function handleCommand(rawText, dscMessage = null) {
         return '🛑 **Dibatalkan!** Shutdown/restart yang tadi pending sudah dihentikan, laptop tetap menyala.';
       }
 
+      case 'remote': {
+        const sub = (args[0] || '').toLowerCase();
+
+        if (sub === 'status') {
+          const st = getRemoteStatus();
+          return st.active
+            ? `🟢 Sesi remote **aktif**, sisa ${Math.ceil(st.remainingMs / 60000)} menit.`
+            : '⚪ Tidak ada sesi remote aktif.';
+        }
+
+        // Sengaja tanpa PIN (sama alasan seperti "cancel"): menutup akses
+        // itu aksi yang MENGURANGI risiko.
+        if (sub === 'off') {
+          const r = await stopRemoteSession('remote off dari Discord');
+          return (r.hadSession || r.wasRunning)
+            ? '🛑 **Sesi remote ditutup.** Password diganti acak & service RustDesk dihentikan.'
+            : '⚪ Tidak ada sesi remote yang aktif.';
+        }
+
+        if (sub === 'on') {
+          const rest = await requirePin(args.slice(1), 'remote on');
+          const minutes = rest[0] ? parseInt(rest[0], 10) : REMOTE_DEFAULT_MINUTES;
+          if (!Number.isFinite(minutes) || minutes < 1 || minutes > REMOTE_MAX_MINUTES) {
+            return `❌ Durasi harus 1–${REMOTE_MAX_MINUTES} menit.`;
+          }
+          const { id } = await startRemoteSession(minutes);
+          showDesktopMessage(`Sesi remote diaktifkan (${minutes} menit).`, 10).catch(() => {});
+          return `🖥️ **Sesi remote aktif ${minutes} menit.**\n• ID: \`${id}\`\n• Password dikirim ke **email** (tidak lewat Discord).\n_(Tutup kapan saja dengan \`remote off\`.)_`;
+        }
+
+        return 'Format: `remote on [menit] <pin>` | `remote off` | `remote status`';
+      }
+
       case 'chgpin': {
         if (args.length < 1) return 'Format: `chgpin <pin_lama>`';
         try {
@@ -2601,6 +2650,17 @@ export async function handleCommand(rawText, dscMessage = null) {
         const absPath = resolveForRclone(targetPath);
         
         if (!fs.existsSync(absPath)) return `❌ Gagal: File atau folder tidak ditemukan.`;
+
+        // Sama seperti copy/move/delete/dz: cegah download folder yang di
+        // dalamnya ada BLOCKED_PATH — tanpa ini, "download D/Project" tetap
+        // akan meng-upload SELURUH isi folder itu ke Google Drive lewat
+        // rclone, termasuk isi folder yang di-block (mis. folder project bot
+        // ini sendiri yang berisi .env dengan token/kredensial), walau
+        // "D/Project" sendiri lolos dari isBlocked() karena bukan target
+        // yang persis di-block.
+        if (containsBlockedPath(absPath)) {
+          return `❌ Gagal: \`${toDisplayPath(targetPath)}\` tidak bisa didownload karena mengandung folder/file yang diblokir (BLOCKED_PATHS) di dalamnya. Download isinya per-item saja, lewati yang diblokir.`;
+        }
 
         const localSize = await getLocalSize(absPath);
         const needsConfidentialPin = isConfidential(absPath);

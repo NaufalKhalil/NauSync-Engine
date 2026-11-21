@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { PassThrough } from 'node:stream';
-import { safeResolve, isRootItself, isBlocked, containsBlockedPath, listRootNames, confidentialAncestorOf } from './pathGuard.js';
+import { safeResolve, isRootItself, isBlocked, containsBlockedPath, containsConfidentialPath, listRootNames, confidentialAncestorOf } from './pathGuard.js';
 import { config } from './config.js';
 
 // NOTE: fitur "dz"/"downloadzip"/"dlzip" (compress ke .zip lalu upload)
@@ -142,6 +142,38 @@ export async function copyPath(srcRel, dstRel) {
   return dst;
 }
 
+// fs.rename gagal dengan EXDEV kalau sumber & tujuan beda drive/volume
+// (mis. "D/..." -> "Documents/..." yang ada di drive C:). Fallback: copy
+// lalu hapus sumbernya. Tujuan SUDAH dipastikan belum ada oleh pemanggil,
+// jadi kalau copy gagal di tengah, sisa copy-an parsial aman dibersihkan.
+async function renameWithFallback(src, dst) {
+  try {
+    await fs.rename(src, dst);
+    return;
+  } catch (err) {
+    if (err.code !== 'EXDEV') throw err;
+  }
+
+  const stat = await fs.lstat(src);
+  try {
+    if (stat.isDirectory()) {
+      await fs.cp(src, dst, { recursive: true, errorOnExist: true, force: false });
+    } else {
+      await fs.copyFile(src, dst, fsSync.constants.COPYFILE_EXCL);
+    }
+  } catch (err) {
+    await fs.rm(dst, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
+
+  // Copy sukses penuh -> baru sumber dihapus.
+  if (stat.isDirectory()) {
+    await fs.rm(src, { recursive: true, force: true });
+  } else {
+    await fs.unlink(src);
+  }
+}
+
 export async function movePath(srcRel, dstRel) {
   if (isRootItself(srcRel)) {
     throw new Error(`"${srcRel}" adalah folder root yang diizinkan itu sendiri, tidak boleh dipindah/di-rename. Pindahkan isinya saja.`);
@@ -168,7 +200,7 @@ export async function movePath(srcRel, dstRel) {
   }
 
   await fs.mkdir(path.dirname(dst), { recursive: true });
-  await fs.rename(src, dst);
+  await renameWithFallback(src, dst);
   return dst;
 }
 
@@ -192,6 +224,16 @@ export async function deletePath(relPath) {
     throw new Error(`"${relPath}" tidak bisa dihapus karena mengandung folder/file yang diblokir (BLOCKED_PATHS) di dalamnya. Hapus isinya per-item saja, lewati yang diblokir.`);
   }
 
+  // Cegah menghapus folder INDUK yang di dalamnya ada folder RAHASIA
+  // (CONFIDENTIAL_PATHS). Kalau lolos, seluruh isi folder rahasia itu ikut
+  // pindah ke ".trash" milik root (yang TIDAK rahasia) dan jadi bisa
+  // di-preview/download tanpa PIN. Kalau src sendiri sudah di dalam folder
+  // rahasia, trash-nya tetap di dalam folder rahasia itu (lihat
+  // trashDirFor), jadi aman.
+  if (!confidentialAncestorOf(src) && containsConfidentialPath(src)) {
+    throw new Error(`"${relPath}" tidak bisa dihapus karena mengandung folder RAHASIA (CONFIDENTIAL_PATHS) di dalamnya. Hapus isinya per-item saja (masuk ke subfolder-nya dulu), lewati folder rahasia.`);
+  }
+
   const trashDir = trashDirFor(src, relPath);
   await fs.mkdir(trashDir, { recursive: true });
 
@@ -207,7 +249,7 @@ export async function deletePath(relPath) {
     attempt++;
   }
 
-  await fs.rename(src, trashTarget);
+  await renameWithFallback(src, trashTarget);
   return trashTarget;
 }
 
@@ -254,6 +296,17 @@ export function resolveForRclone(relPath) {
 // di dalam tiap CONFIDENTIAL_PATHS (karena file dari folder rahasia
 // sengaja ditrash ke situ, bukan ke ".trash" root, biar proteksi PIN-nya
 // ikut terbawa — lihat komentar trashDirFor()).
+// Baca waktu penghapusan (ms epoch) dari nama item trash buatan deletePath():
+//   "<ISO dengan ':' dan '.' diganti '-'>__<nama>"  atau
+//   "<ISO...>-<n>__<nama>" (suffix n kalau nama kebetulan bentrok).
+// Return null kalau formatnya tidak dikenali.
+function trashDeletedAtMs(entryName) {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z(?:-\d+)?__/.exec(entryName);
+  if (!m) return null;
+  const ms = Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`);
+  return Number.isFinite(ms) ? ms : null;
+}
+
 function allTrashDirs() {
   const dirs = new Set();
   for (const rootAbsPath of Object.values(config.allowedRoots)) {
@@ -266,9 +319,15 @@ function allTrashDirs() {
 }
 
 // Sapu semua folder trash, hapus PERMANEN item yang sudah lebih tua dari
-// config.trashRetentionDays (dihitung dari mtime item itu di dalam trash —
-// yaitu waktu dia DIPINDAH ke trash, karena deletePath melakukan fs.rename
-// yang set ulang mtime). Dipanggil rutin (harian) dari index.js, bukan
+// config.trashRetentionDays — dihitung dari TIMESTAMP PENGHAPUSAN yang
+// ditulis deletePath() di awal nama item (mis.
+// "2026-11-21T10-34-00-123Z__nama.docx"), BUKAN dari mtime. fs.rename TIDAK
+// mengubah mtime (di NTFS mtime tetap = waktu file terakhir DIEDIT), jadi
+// file yang terakhir diedit 2 tahun lalu lalu baru di-delete hari ini akan
+// salah dianggap "sudah 2 tahun di trash" dan dihapus permanen seketika.
+// Item yang namanya TIDAK berformat timestamp (mis. dipindah manual ke
+// ".trash") tidak pernah dihapus otomatis. Dipanggil rutin (harian) dari
+// index.js, bukan
 // sesuatu yang dipicu command user.
 //
 // Return array path yang berhasil dihapus permanen, buat dilaporkan lewat
@@ -297,8 +356,10 @@ export async function purgeExpiredTrash() {
         continue;
       }
 
-      const ageMs = now - stat.mtimeMs;
-      if (ageMs < cutoffMs) continue;
+      // Waktu dihapus dari NAMA item. Nama tak dikenali -> JANGAN dihapus.
+      const deletedAt = trashDeletedAtMs(entry.name);
+      if (deletedAt === null) continue;
+      if (now - deletedAt < cutoffMs) continue;
 
       try {
         await fs.rm(entryPath, { recursive: true, force: true });

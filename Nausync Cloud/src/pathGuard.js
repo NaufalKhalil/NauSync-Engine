@@ -12,6 +12,96 @@ function splitVirtualPath(virtualPath) {
   return { rootName: segments[0], rest: segments.slice(1) };
 }
 
+// Windows tidak peduli huruf besar/kecil pada nama folder ("D:\Project" dan
+// "D:\PROJECT" adalah folder yang SAMA di disk), tapi perbandingan string
+// biasa (startsWith) itu case-SENSITIVE. Tanpa normalisasi ini, path yang
+// diketik beda kapitalisasi dari BLOCKED_PATHS/CONFIDENTIAL_PATHS bisa lolos
+// dari pengecekan padahal menyasar folder fisik yang sama persis. Di
+// Linux/Mac (di mana filesystem umumnya case-sensitive), perbandingan tetap
+// apa adanya.
+function normalizeForCompare(p) {
+  return process.platform === 'win32' ? p.toLowerCase() : p;
+}
+
+// --- Path FISIK (realpath) ---
+//
+// Semua pengecekan blocked/confidential dulu cuma membandingkan STRING path
+// yang diketik user. Itu bisa dikelabui: nama pendek 8.3 ("PROJEC~1"),
+// junction/symlink, atau beda kapitalisasi drive bisa menunjuk folder
+// fisik yang sama dengan BLOCKED_PATHS/CONFIDENTIAL_PATHS tapi stringnya
+// tidak cocok. fs.realpathSync.native() meluaskan semuanya (8.3, junction,
+// symlink) jadi lokasi fisik yang sebenarnya.
+//
+// realpathLoose(): sama seperti realpath, tapi tetap bekerja untuk path
+// yang BELUM ada (mis. tujuan copy/move) — realpath-kan leluhur terdekat
+// yang sudah ada, lalu tempelkan sisanya.
+function realpathLoose(p) {
+  let current = p;
+  const tail = [];
+  while (true) {
+    try {
+      const real = fs.realpathSync.native(current);
+      return tail.length ? path.join(real, ...tail.slice().reverse()) : real;
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return p; // sudah di puncak & tetap gagal (mis. drive tidak ada)
+      tail.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+// Daftar BLOCKED_PATHS / CONFIDENTIAL_PATHS "diperluas": string aslinya DAN
+// bentuk fisiknya (realpath). Di-cache 60 detik supaya listing folder besar
+// tidak memanggil realpath ratusan kali; cukup singkat supaya drive yang
+// baru dicolok / junction yang baru dibuat tetap ketangkap tanpa restart.
+const EXPAND_TTL_MS = 60 * 1000;
+const expandCache = new Map(); // kind -> { at, list }
+
+function expandedPaths(kind, rawList) {
+  const cached = expandCache.get(kind);
+  if (cached && Date.now() - cached.at < EXPAND_TTL_MS) return cached.list;
+
+  const seen = new Set();
+  const list = [];
+  const add = (p) => {
+    const key = normalizeForCompare(p);
+    if (!seen.has(key)) {
+      seen.add(key);
+      list.push(p);
+    }
+  };
+  for (const p of rawList) {
+    add(p);
+    add(realpathLoose(p));
+  }
+
+  expandCache.set(kind, { at: Date.now(), list });
+  return list;
+}
+
+const blockedList = () => expandedPaths('blocked', config.blockedPaths);
+const confidentialList = () => expandedPaths('confidential', config.confidentialPaths);
+
+function withSep(p) {
+  return p.endsWith(path.sep) ? p : p + path.sep;
+}
+
+// True kalau absPath sama dengan / ada di dalam salah satu path di `list`.
+function isInsideAny(absPath, list) {
+  const target = normalizeForCompare(absPath);
+  return list.some((entry) => {
+    const e = normalizeForCompare(entry);
+    return target === e || target.startsWith(withSep(e));
+  });
+}
+
+// True kalau absPath adalah LELUHUR dari salah satu path di `list`.
+function containsAny(absPath, list) {
+  const prefix = withSep(normalizeForCompare(absPath));
+  return list.some((entry) => normalizeForCompare(entry).startsWith(prefix));
+}
+
 /**
  * Resolve virtual path jadi path absolut di filesystem, dan pastikan
  * hasilnya tidak keluar dari root yang bersangkutan (mencegah "../../"
@@ -26,6 +116,11 @@ function splitVirtualPath(virtualPath) {
  *   "Documents"              -> root Documents itu sendiri
  *   "Documents/Skripsi"      -> subfolder di dalam root Documents
  *   "D/Project/app.js"       -> file di dalam root D
+ *
+ * PERUBAHAN: yang DIKEMBALIKAN sekarang path FISIK (realpath) — bukan
+ * string yang diketik. Jadi semua pengecekan lanjutan di commands.js
+ * (isConfidential, containsBlockedPath, dst.) otomatis bekerja pada lokasi
+ * sebenarnya, tidak bisa dikelabui nama pendek 8.3 atau junction.
  */
 export function safeResolve(virtualPath) {
   if (!virtualPath || typeof virtualPath !== 'string') {
@@ -53,7 +148,7 @@ export function safeResolve(virtualPath) {
 
   const resolved = path.resolve(rootAbsPath, cleanedRest);
 
-  const normalizedRoot = rootAbsPath.endsWith(path.sep) ? rootAbsPath : rootAbsPath + path.sep;
+  const normalizedRoot = withSep(rootAbsPath);
 
   if (resolved !== rootAbsPath && !resolved.startsWith(normalizedRoot)) {
     throw new Error(`Path "${virtualPath}" berada di luar folder "${rootName}" yang diizinkan.`);
@@ -63,76 +158,41 @@ export function safeResolve(virtualPath) {
     throw new Error(`Path "${virtualPath}" adalah folder/file yang diblokir dan tidak boleh diakses.`);
   }
 
-  // --- Pertahanan symlink-escape ---
-  // Semua pengecekan di atas cuma memvalidasi STRING path-nya (mencegah
-  // "../../" dsb). Tapi kalau di dalam salah satu ALLOWED_ROOTS ada
-  // symlink (dibuat sengaja atau tidak sengaja oleh program lain) yang
-  // menunjuk ke folder di LUAR root itu, string path-nya tetap kelihatan
-  // "aman" walau lokasi FISIK sebenarnya di disk sudah keluar sandbox —
-  // fs.readdir/fs.cp/fs.rename Node.js otomatis mengikuti symlink itu
-  // tanpa peduli batas ALLOWED_ROOTS.
-  //
-  // fs.realpathSync() mengikuti SEMUA symlink di sepanjang path (termasuk
-  // folder induknya, bukan cuma target akhir), jadi hasilnya adalah lokasi
-  // fisik sebenarnya. Kalau itu ternyata sudah keluar dari root asli, tolak.
-  //
-  // Path yang BELUM ada di disk (mis. tujuan "copy"/"move" yang baru mau
-  // dibuat) akan gagal realpath dengan ENOENT — itu normal & tidak masalah,
-  // karena belum ada apa pun yang bisa "kabur" lewat symlink yang belum
-  // exist. Biarkan lolos, nanti fs.mkdir/fs.rename yang benar-benar
-  // membuatnya di lokasi `resolved` yang sudah tervalidasi.
-  let realResolved;
-  try {
-    realResolved = fs.realpathSync(resolved);
-  } catch {
-    realResolved = null;
+  // --- Pertahanan symlink/junction/8.3 ---
+  // Cek di atas cuma memvalidasi STRING path-nya. Di sini path diubah ke
+  // lokasi FISIK (mengikuti SEMUA symlink/junction & meluaskan nama 8.3,
+  // termasuk di folder induknya), lalu:
+  //   1. harus tetap berada di dalam root fisik yang sama (anti symlink-escape)
+  //   2. dicek ulang terhadap BLOCKED_PATHS (anti bypass lewat nama pendek)
+  // Path yang belum ada (mis. tujuan copy/move) di-realpath lewat leluhur
+  // terdekat yang sudah ada, jadi tidak bisa menyelinap lewat symlink di
+  // folder induknya.
+  const realResolved = realpathLoose(resolved);
+  const realRoot = realpathLoose(rootAbsPath);
+
+  const normalizedRealTarget = normalizeForCompare(realResolved);
+  const normalizedRealRoot = normalizeForCompare(realRoot);
+
+  if (normalizedRealTarget !== normalizedRealRoot && !normalizedRealTarget.startsWith(withSep(normalizedRealRoot))) {
+    throw new Error(`Path "${virtualPath}" mengarah lewat symlink/junction ke luar folder "${rootName}" yang diizinkan — akses ditolak.`);
   }
 
-  if (realResolved) {
-    let realRoot;
-    try {
-      realRoot = fs.realpathSync(rootAbsPath);
-    } catch {
-      realRoot = rootAbsPath;
-    }
-    const normalizedRealTarget = normalizeForCompare(realResolved);
-    const normalizedRealRoot = normalizeForCompare(realRoot);
-    const realRootWithSep = normalizedRealRoot.endsWith(path.sep) ? normalizedRealRoot : normalizedRealRoot + path.sep;
-
-    if (normalizedRealTarget !== normalizedRealRoot && !normalizedRealTarget.startsWith(realRootWithSep)) {
-      throw new Error(`Path "${virtualPath}" mengarah lewat symlink ke luar folder "${rootName}" yang diizinkan — akses ditolak.`);
-    }
+  if (isBlocked(realResolved)) {
+    throw new Error(`Path "${virtualPath}" adalah folder/file yang diblokir dan tidak boleh diakses.`);
   }
 
-  return resolved;
+  return realResolved;
 }
 
 /**
  * True kalau absPath (path filesystem absolut, hasil resolve) sama dengan,
  * atau berada DI DALAM, salah satu folder/file yang didaftarkan di
- * BLOCKED_PATHS — dipakai untuk mengecualikan folder sensitif (mis. folder
- * project bot ini sendiri yang berisi .env) walaupun berada di dalam root
- * yang diizinkan (mis. root "D" yang mencakup seluruh drive D:).
+ * BLOCKED_PATHS (termasuk bentuk fisik/realpath-nya) — dipakai untuk
+ * mengecualikan folder sensitif (mis. folder project bot ini sendiri yang
+ * berisi .env) walaupun berada di dalam root yang diizinkan.
  */
-// Windows tidak peduli huruf besar/kecil pada nama folder ("D:\Project" dan
-// "D:\PROJECT" adalah folder yang SAMA di disk), tapi perbandingan string
-// biasa (startsWith) itu case-SENSITIVE. Tanpa normalisasi ini, path yang
-// diketik beda kapitalisasi dari BLOCKED_PATHS/CONFIDENTIAL_PATHS bisa lolos
-// dari pengecekan padahal menyasar folder fisik yang sama persis. Di
-// Linux/Mac (di mana filesystem umumnya case-sensitive), perbandingan tetap
-// apa adanya.
-function normalizeForCompare(p) {
-  return process.platform === 'win32' ? p.toLowerCase() : p;
-}
-
 export function isBlocked(absPath) {
-  const target = normalizeForCompare(absPath);
-  return config.blockedPaths.some((blocked) => {
-    const b = normalizeForCompare(blocked);
-    if (target === b) return true;
-    const normalizedBlocked = b.endsWith(path.sep) ? b : b + path.sep;
-    return target.startsWith(normalizedBlocked);
-  });
+  return isInsideAny(absPath, blockedList());
 }
 
 /**
@@ -143,13 +203,21 @@ export function isBlocked(absPath) {
  * commands.js.
  */
 export function isConfidential(absPath) {
-  const target = normalizeForCompare(absPath);
-  return config.confidentialPaths.some((confidential) => {
-    const c = normalizeForCompare(confidential);
-    if (target === c) return true;
-    const normalized = c.endsWith(path.sep) ? c : c + path.sep;
-    return target.startsWith(normalized);
-  });
+  return isInsideAny(absPath, confidentialList());
+}
+
+/**
+ * True kalau absPath adalah folder LELUHUR dari salah satu
+ * CONFIDENTIAL_PATHS — arah kebalikan dari isConfidential().
+ *
+ * KENAPA PERLU: isConfidential() cuma menjawab "apakah target ada DI DALAM
+ * folder rahasia?". Target yang justru MENGANDUNG folder rahasia (mis.
+ * "D/Project" yang di dalamnya ada "D/Project/Data Siswa") lolos dari
+ * pengecekan itu, padahal copy/zip/download/move folder induknya ikut
+ * membawa seluruh isi folder rahasia tanpa PIN.
+ */
+export function containsConfidentialPath(absPath) {
+  return containsAny(absPath, confidentialList());
 }
 
 /**
@@ -171,10 +239,9 @@ export function isConfidential(absPath) {
 export function confidentialAncestorOf(absPath) {
   const target = normalizeForCompare(absPath);
   let best = null;
-  for (const confidential of config.confidentialPaths) {
+  for (const confidential of confidentialList()) {
     const c = normalizeForCompare(confidential);
-    const normalized = c.endsWith(path.sep) ? c : c + path.sep;
-    if (target === c || target.startsWith(normalized)) {
+    if (target === c || target.startsWith(withSep(c))) {
       // Ambil yang paling SPESIFIK (path terpanjang) kalau ada beberapa
       // confidential path yang bersarang (mis. "D/Project" dan
       // "D/Project/Data Siswa" sama-sama terdaftar).
@@ -212,9 +279,7 @@ export function isRootItself(virtualPath) {
  * isinya".
  */
 export function containsBlockedPath(absPath) {
-  const target = normalizeForCompare(absPath);
-  const normalizedTarget = target.endsWith(path.sep) ? target : target + path.sep;
-  return config.blockedPaths.some((blocked) => normalizeForCompare(blocked).startsWith(normalizedTarget));
+  return containsAny(absPath, blockedList());
 }
 
 /**

@@ -36,17 +36,22 @@ function detectColor(text) {
 }
 
 // Batas AMAN buat field "description" embed Discord (limit resminya 4096
-// karakter) — dikasih buffer di bawahnya. Kalau teks balasan ternyata
-// lebih panjang dari ini (jarang terjadi, tapi bisa aja buat listing
-// folder yang isinya banyak banget), fallback ke pesan teks BIASA (bukan
-// embed) supaya tidak kena error dari Discord API dan bikin command
-// gagal total gara-gara pembungkus tampilan doang — command tetap harus
-// jalan walau bingkainya kepaksa dilepas.
+// karakter) — dikasih buffer di bawahnya.
 const MAX_EMBED_DESCRIPTION = 4000;
 
+// Kalau teks lebih panjang dari batas di atas, embed diisi potongan awalnya
+// (dipotong di batas baris) dan teks LENGKAP dilampirkan sebagai file .txt.
+//
+// BUG LAMA: fallback-nya `{ content: raw }`, padahal batas `content` pesan
+// Discord cuma 2000 karakter (lebih kecil dari batas embed) — jadi teks
+// 2000–4000+ karakter malah ditolak Discord dan user cuma melihat "kesalahan
+// internal". Attachment tidak punya batas sekecil itu.
+const TRUNCATE_AT = 3700;
+const FULL_TEXT_FILENAME = 'balasan-lengkap.txt';
+
 // Ubah 1 string balasan jadi payload siap kirim ke discord.js:
-// { embeds: [...] } (kasus normal) atau { content: text } (fallback kalau
-// kosong/kepanjangan). `extra` buat nyisipin field lain yang mau digabung
+// { embeds: [...] } (kasus normal) atau { embeds: [potongan], files: [txt] }
+// (kalau kepanjangan). `extra` buat nyisipin field lain yang mau digabung
 // bareng (mis. `components` buat tombol, `files` buat attachment).
 //
 // Return null kalau text kosong/null — konsisten sama kebiasaan lama bot
@@ -58,7 +63,22 @@ export function toEmbedPayload(text, extra = {}) {
   if (!raw.trim()) return null;
 
   if (raw.length > MAX_EMBED_DESCRIPTION) {
-    return { content: raw, ...extra };
+    // Potong di akhir baris terdekat supaya tidak memotong kata/baris di tengah.
+    let cut = raw.lastIndexOf('\n', TRUNCATE_AT);
+    if (cut < TRUNCATE_AT * 0.5) cut = TRUNCATE_AT;
+
+    let head = raw.slice(0, cut);
+    // Kalau potongan berhenti di dalam code block (```), tutup dulu biar
+    // sisa embed tidak ikut ter-render sebagai kode.
+    if ((head.match(/```/g) || []).length % 2 === 1) head += '\n```';
+
+    const note = `\n\n_(Balasan terlalu panjang — dipotong. Versi lengkap ada di attachment \`${FULL_TEXT_FILENAME}\`.)_`;
+
+    return {
+      embeds: [{ description: head + note, color: detectColor(raw) }],
+      ...extra,
+      files: [...(extra.files || []), { attachment: Buffer.from(raw, 'utf-8'), name: FULL_TEXT_FILENAME }],
+    };
   }
 
   return {
